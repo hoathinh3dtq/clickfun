@@ -99,8 +99,15 @@ is the preferred target.
 ## Tests
 
 ```powershell
-dotnet test        # 8/8 passing (FitGeometry, settings round-trip, filter decode)
+dotnet test        # 13/13 passing (FitGeometry, PaperDetect, settings round-trip, filter decode)
 ```
+
+## Live view & paper detection
+
+- `CLICKFUN_LIVEVIEW=auto|hdmi|edsdk` — live view source (default `auto`: HDMI/UVC capture card if one opens (DSHOW indices 0-3), else Canon EVF). Full-res capture is always USB EDSDK
+- HDMI/UVC live view endpoints (same contract as the original booth): `/stream.mjpg` (multipart MJPEG), `/frame.jpg`, `/liveview/mode` — token via header or `?token=` for `<img>`
+- `/print/layouts` — detected 2x6/4x6 sizes on the configured printer (dimension-matched, locale/firmware independent)
+- `/print` accepts `paperLayout: "auto"|"2x6"|"4x6"` (auto matches image aspect to the sizes the DS-RX1 driver exposes)
 
 ## Notable implementation decisions
 

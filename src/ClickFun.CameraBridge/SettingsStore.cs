@@ -59,7 +59,8 @@ public sealed class SettingsStore
         DefaultFilter: "none",
         OverlayTemplate: "",
         PhotosRoot: Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ClickFun", "photos"),
-        VideoMaxSeconds: 10);
+        VideoMaxSeconds: 10,
+        PaperLayout: "auto");
 }
 
 public static class BridgeLog

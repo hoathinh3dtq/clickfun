@@ -20,6 +20,7 @@ export interface SettingsDto {
   overlayTemplate: string;
   photosRoot: string;
   videoMaxSeconds: number;
+  paperLayout: string;
 }
 
 export interface CaptureResult {
@@ -70,17 +71,8 @@ export class BridgeClient {
     return res.json();
   }
 
-  frameLatestUrl(): string {
-    // <img> tags can't set headers; the bridge token gate would reject this.
-    // Use fetch->blob instead (see App.tsx). Kept here for completeness.
-    return `${this.baseUrl}/frame/latest`;
-  }
-
-  async fetchFrameBlob(): Promise<Blob | null> {
-    const res = await fetch(`${this.baseUrl}/frame/latest`, { headers: this.headers() });
-    if (res.status === 204) return null;
-    if (!res.ok) throw new Error(`frame failed: ${res.status}`);
-    return res.blob();
+  frameStreamUrl(): string {
+    return `${this.baseUrl}/stream.mjpg?token=${encodeURIComponent(this.token)}`;
   }
 
   async getSettings(): Promise<SettingsDto> {
@@ -97,11 +89,11 @@ export class BridgeClient {
     return res.json();
   }
 
-  async print(imagePath: string, copies?: number): Promise<{ success: boolean; message: string }> {
+  async print(imagePath: string, copies?: number, paperLayout?: string): Promise<{ success: boolean; message: string; paperLayout?: string }> {
     const res = await fetch(`${this.baseUrl}/print`, {
       method: "POST",
       headers: { ...this.headers(), "Content-Type": "application/json" },
-      body: JSON.stringify({ imagePath, copies }),
+      body: JSON.stringify({ imagePath, copies, paperLayout }),
     });
     if (!res.ok) return { success: false, message: `print failed: ${res.status}` };
     return res.json();

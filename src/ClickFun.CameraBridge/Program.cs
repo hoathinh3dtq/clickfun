@@ -28,11 +28,16 @@ builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
 
 var app = builder.Build();
 
-// Token gate for every endpoint except /health.
+// Token gate. MJPEG/frame endpoints also accept ?token= for <img> tags.
 app.Use(async (ctx, next) =>
 {
     if (ctx.Request.Path == "/health") { await next(); return; }
-    if (!ctx.Request.Headers.TryGetValue("X-ClickFun-Token", out var provided) || provided != token)
+
+    var isMedia = ctx.Request.Path == "/stream.mjpg" || ctx.Request.Path == "/frame.jpg" || ctx.Request.Path == "/frame/latest";
+    var headerOk = ctx.Request.Headers.TryGetValue("X-ClickFun-Token", out var h) && h == token;
+    var queryOk = isMedia && ctx.Request.Query.TryGetValue("token", out var q) && q == token;
+
+    if (!headerOk && !queryOk)
     {
         ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
         await ctx.Response.WriteAsJsonAsync(new { error = "missing or invalid X-ClickFun-Token" });
@@ -40,6 +45,53 @@ app.Use(async (ctx, next) =>
     }
     await next();
 });
+
+var liveView = LiveViewSelector.Select(camera);
+BridgeLog.Info($"Live view source: {liveView.Kind} (CLICKFUN_LIVEVIEW={(Environment.GetEnvironmentVariable("CLICKFUN_LIVEVIEW") ?? "auto")})");
+
+// ---------- MJPEG live view (same contract as the original booth bridge) ----------
+
+app.MapGet("/stream.mjpg", async (HttpContext ctx) =>
+{
+    ctx.Response.ContentType = "multipart/x-mixed-replace; boundary=frame";
+    ctx.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+    ctx.Response.Headers.Pragma = "no-cache";
+    ctx.Response.Headers["Access-Control-Allow-Origin"] = "*";
+    ctx.Response.Headers["Cross-Origin-Resource-Policy"] = "cross-origin";
+
+    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
+    while (!cts.IsCancellationRequested)
+    {
+        var frame = liveView.GetLatestFrame();
+        if (frame is not null)
+        {
+            var (jpeg, _) = frame.Value;
+            await ctx.Response.WriteAsync($"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {jpeg.Length}\r\n\r\n", cts.Token);
+            await ctx.Response.Body.WriteAsync(jpeg, cts.Token);
+            await ctx.Response.WriteAsync("\r\n", cts.Token);
+            await ctx.Response.Body.FlushAsync(cts.Token);
+        }
+        await Task.Delay(400, cts.Token).ConfigureAwait(false);
+    }
+});
+
+app.MapGet("/frame.jpg", () =>
+{
+    var frame = liveView.GetLatestFrame();
+    if (frame is null) return Results.NoContent();
+    return Results.Bytes(frame.Value.Jpeg, "image/jpeg");
+});
+
+app.MapGet("/liveview/mode", () => Results.Ok(new { mode = liveView.Kind }));
+
+app.MapGet("/frame/latest", () =>
+{
+    var frame = liveView.GetLatestFrame();
+    if (frame is null) return Results.NoContent();
+    return Results.Bytes(frame.Value.Jpeg, "image/jpeg");
+});
+
+// ---------- Camera ----------
 
 app.MapGet("/health", () =>
 {
@@ -62,13 +114,6 @@ app.MapPost("/camera/disconnect", async () =>
     return Results.Ok(new { disconnected = true });
 });
 
-app.MapGet("/frame/latest", () =>
-{
-    var frame = camera.GetLatestFrame();
-    if (frame is null) return Results.NoContent();
-    return Results.Bytes(frame.Value.Jpeg, "image/jpeg");
-});
-
 app.MapPost("/capture", async () =>
 {
     var result = await camera.CaptureAsync();
@@ -77,7 +122,6 @@ app.MapPost("/capture", async () =>
 
 app.MapPost("/preview", async (HttpRequest req) =>
 {
-    // Applies filter + overlay to an existing capture and returns the processed JPEG.
     var body = await req.ReadFromJsonAsync<PreviewRequest>();
     if (body is null || string.IsNullOrWhiteSpace(body.ImagePath) || !File.Exists(body.ImagePath))
         return Results.BadRequest(new { error = "imagePath missing or not found" });
@@ -97,6 +141,8 @@ app.MapPost("/video/download", async () =>
     return result.Success ? Results.Ok(result) : Results.Problem(result.Error, statusCode: 502);
 });
 
+// ---------- Settings & print ----------
+
 app.MapGet("/settings", () => Results.Ok(settings.Load()));
 
 app.MapPut("/settings", async (HttpRequest req) =>
@@ -104,6 +150,19 @@ app.MapPut("/settings", async (HttpRequest req) =>
     var dto = await req.ReadFromJsonAsync<SettingsDto>();
     if (dto is null) return Results.BadRequest(new { error = "invalid settings payload" });
     return Results.Ok(settings.Save(dto));
+});
+
+app.MapGet("/print/layouts", () =>
+{
+    var s = settings.Load();
+    var printer = string.IsNullOrWhiteSpace(s.PrinterName) ? null : s.PrinterName;
+    var detected = printer is null
+        ? PrintService.DetectLayouts(PrinterSettingsInstalledFirst())
+        : PrintService.DetectLayouts(printer);
+    return Results.Ok(new { printer = printer ?? "(default)", layouts = detected });
+
+    static string? PrinterSettingsInstalledFirst() =>
+        System.Drawing.Printing.PrinterSettings.InstalledPrinters.Cast<string>().FirstOrDefault();
 });
 
 app.MapPost("/print", async (HttpRequest req) =>

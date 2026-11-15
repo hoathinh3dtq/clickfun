@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BridgeClient, type SettingsDto, type CaptureResult } from "./bridge";
 
 type Screen = "home" | "countdown" | "preview" | "done";
@@ -7,34 +7,25 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
   const [countdown, setCountdown] = useState(3);
   const [capturedPath, setCapturedPath] = useState<string | null>(null);
-  const [frameUrl, setFrameUrl] = useState<string | null>(null);
+  const [streamUrl] = useState(() => BridgeClient.fromLocalStorage().frameStreamUrl());
+  const [streamAlive, setStreamAlive] = useState(true);
   const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [status, setStatus] = useState("connecting…");
   const [printing, setPrinting] = useState(false);
   const bridgeRef = useRef(BridgeClient.fromLocalStorage());
-  const objectUrlRef = useRef<string | null>(null);
-
-  const refreshFrame = useCallback(async () => {
-    try {
-      const blob = await bridgeRef.current.fetchFrameBlob();
-      if (blob) {
-        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = URL.createObjectURL(blob);
-        setFrameUrl(objectUrlRef.current);
-        setStatus("live");
-      } else {
-        setStatus("camera idle");
-      }
-    } catch {
-      setStatus("bridge unreachable");
-    }
-  }, []);
 
   useEffect(() => {
-    const id = setInterval(refreshFrame, 250);
+    const id = setInterval(async () => {
+      try {
+        const s = await bridgeRef.current.status();
+        setStatus(s.connected ? `live · ${s.cameraModel}` : "camera not connected");
+      } catch {
+        setStatus("bridge unreachable");
+      }
+    }, 3000);
     return () => clearInterval(id);
-  }, [refreshFrame]);
+  }, []);
 
   useEffect(() => {
     bridgeRef.current.getSettings().then(setSettings).catch(() => setSettings(null));
@@ -60,7 +51,7 @@ export default function App() {
   async function doPrint() {
     if (!capturedPath) return;
     setPrinting(true);
-    const result = await bridgeRef.current.print(capturedPath, settings?.copies ?? 1);
+    const result = await bridgeRef.current.print(capturedPath, settings?.copies ?? 1, settings?.paperLayout);
     setPrinting(false);
     setStatus(result.message);
     setScreen("done");
@@ -72,7 +63,11 @@ export default function App() {
         Click<span>Fun</span>
       </header>
 
-      {frameUrl && screen !== "preview" && <img className="viewfinder" src={frameUrl} alt="" />}
+      {screen !== "preview" && (
+        streamAlive
+          ? <img className="viewfinder" src={streamUrl} alt="" onError={() => setStreamAlive(false)} />
+          : <div className="viewfinder placeholder">Camera live view offline</div>
+      )}
 
       {screen === "home" && (
         <button className="shutter" onClick={startCapture}>📸 Chụp ngay</button>
@@ -104,7 +99,7 @@ export default function App() {
             <h2>Cài đặt</h2>
             <p>Bridge: {localStorage.getItem("clickfun.bridgeUrl") ?? "http://127.0.0.1:8737"}</p>
             <p>Printer: {settings?.printerName || "(mặc định)"} · Copies: {settings?.copies} · Zoom: {settings?.zoom}</p>
-            <p>Countdown: {settings?.countdownSeconds}s · Filter: {settings?.defaultFilter}</p>
+            <p>Countdown: {settings?.countdownSeconds}s · Filter: {settings?.defaultFilter} · Paper: {settings?.paperLayout ?? "auto"}</p>
             <button onClick={() => setShowSettings(false)}>Đóng</button>
           </div>
         </div>

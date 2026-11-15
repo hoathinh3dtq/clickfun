@@ -1,9 +1,9 @@
 namespace ClickFun.CameraBridge;
 
 public sealed record PrintRequest(string ImagePath, int Copies = 1, double? Zoom = null,
-    int? OffsetX = null, int? OffsetY = null, string? PrinterName = null);
+    int? OffsetX = null, int? OffsetY = null, string? PrinterName = null, string? PaperLayout = null);
 
-public sealed record PrintResult(bool Success, string Message, int CopiesPrinted);
+public sealed record PrintResult(bool Success, string Message, int CopiesPrinted, string? PaperLayout);
 
 public sealed record CaptureResult(bool Success, string? FilePath, string? Error);
 
@@ -19,6 +19,7 @@ public sealed record SettingsDto(
     string DefaultFilter,
     string OverlayTemplate,
     string PhotosRoot,
-    int VideoMaxSeconds);
+    int VideoMaxSeconds,
+    string PaperLayout = "auto");
 
 public sealed record HealthDto(string Status, string Version, string CameraBackend, bool PrinterAvailable);
