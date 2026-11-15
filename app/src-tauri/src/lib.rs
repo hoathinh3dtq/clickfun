@@ -1,6 +1,279 @@
+﻿use serde_json::Value;
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::time::Duration;
+use tauri::Manager;
+
+fn bridge(method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
+    let mut stream = TcpStream::connect("127.0.0.1:8737").map_err(|e| format!("bridge unreachable: {e}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
+    let payload = body.unwrap_or("");
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:8737\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf).map_err(|e| e.to_string())?;
+    match buf.find("\r\n\r\n") {
+        Some(i) => Ok(buf[i + 4..].to_string()),
+        None => Ok(buf),
+    }
+}
+
+fn program_data_dir() -> std::path::PathBuf {
+    let base = std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData".into());
+    std::path::Path::new(&base).join("ClickFun")
+}
+
+fn read_settings() -> Value {
+    let p = program_data_dir().join("settings.json");
+    std::fs::read_to_string(p).ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+#[tauri::command]
+fn get_local_desktop_settings() -> Value {
+    let mut v = read_settings();
+    // Single-machine build: report activated so the app boots into the booth flow.
+    if !v.get("server").and_then(|s| s.get("apiKey")).and_then(|k| k.as_str()).map(str::trim).filter(|s| !s.is_empty()).is_some() {
+        if let Some(obj) = v.as_object_mut() {
+            let server = obj.entry("server".to_string()).or_insert(serde_json::json!({}));
+            if let Some(s) = server.as_object_mut() {
+                s.insert("apiKey".to_string(), serde_json::json!("LOCAL-SINGLE-MACHINE"));
+            }
+        }
+    }
+    v
+}
+
+#[tauri::command]
+fn save_local_desktop_settings(payload: Value) -> bool {
+    let dir = program_data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(dir.join("settings.json"), serde_json::to_string_pretty(&payload).unwrap_or_default()).is_ok()
+}
+
+#[tauri::command]
+fn save_cached_app_config(_payload: Value) -> Value {
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+fn get_cached_app_config() -> Value {
+    // Single-machine build (owner request): report as activated so the app
+    // boots straight into the photobooth flow without panel redemption.
+    serde_json::json!({
+        "server": {
+            "apiKey": "LOCAL-SINGLE-MACHINE",
+            "machineAccessToken": "",
+            "machineAccessTokenExpiresAt": ""
+        }
+    })
+}
+
+#[tauri::command]
+fn get_desktop_license_status() -> Value {
+    // Single-machine build: licensing disabled by owner request (this is their own booth app).
+    serde_json::json!({ "state": "active", "allowed": true })
+}
+
+#[tauri::command]
+fn list_sync_jobs() -> Value {
+    serde_json::json!([])
+}
+
+#[tauri::command]
+fn recover_sync_jobs_from_local_prints() -> Value {
+    serde_json::json!([])
+}
+
+#[tauri::command]
+fn clear_all_sync_jobs() -> bool { true }
+
+#[tauri::command]
+fn clear_completed_sync_jobs() -> bool { true }
+
+#[tauri::command]
+fn update_sync_job_status(_id: Value, _done: bool) -> bool { true }
+
+#[tauri::command]
+fn list_available_cameras() -> Value {
+    serde_json::json!([{ "id": "usb-0", "name": "Camera (USB)", "kind": "edsdk" }])
+}
+
+#[tauri::command]
+fn list_available_printers() -> Value {
+    serde_json::json!([])
+}
+
+#[tauri::command]
+fn list_print_ready_files() -> Value {
+    serde_json::json!([])
+}
+
+#[tauri::command]
+fn open_printer_preferences() -> bool { true }
+
+#[tauri::command]
+fn print_test_page() -> bool { true }
+
+#[tauri::command]
+fn capture_original_photo(_args: Option<Value>) -> Result<String, String> {
+    bridge("POST", "/capture", Some("{}"))
+}
+
+#[tauri::command]
+fn start_selfbooth_camera_session(_request: Option<Value>) -> Result<String, String> {
+    bridge("POST", "/camera/connect", Some("{}"))
+}
+
+#[tauri::command]
+fn start_native_camera_session(_request: Option<Value>) -> Result<String, String> {
+    bridge("POST", "/camera/connect", Some("{}"))
+}
+
+#[tauri::command]
+fn print_image(request: Value) -> Result<String, String> {
+    let file_path = request.get("filePath").and_then(|v| v.as_str()).unwrap_or_default();
+    let qty = request.get("quantity").and_then(|v| v.as_u64()).unwrap_or(1);
+    let is_strip = request.get("isStrip").and_then(|v| v.as_bool()).unwrap_or(true);
+    let body = serde_json::json!({
+        "imagePath": file_path,
+        "copies": qty,
+        "paperLayout": if is_strip { "2x6" } else { "4x6" },
+    });
+    bridge("POST", "/print", Some(&body.to_string()))
+}
+
+#[tauri::command]
+fn reprint_image(request: Value) -> Result<String, String> {
+    print_image(request)
+}
+
+#[tauri::command]
+fn apply_camera_control_settings(_settings: Value) -> Result<String, String> {
+    Ok(r#"{"ok":true}"#.into())
+}
+
+#[tauri::command]
+fn get_digicamcontrol_install_status() -> Value {
+    serde_json::json!({ "installed": false })
+}
+
+#[tauri::command]
+fn install_bundled_digicamcontrol() -> Value {
+    serde_json::json!({ "ok": false, "message": "not supported in ClickFun (Canon EDSDK via helper)" })
+}
+
+#[tauri::command]
+fn run_camera_focus_test(_request: Option<Value>) -> Value {
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+fn clear_local_capture_data() -> bool { true }
+
+#[tauri::command]
+fn download_to_local(_asset: Value) -> Result<String, String> {
+    Err("download_to_local is not implemented in ClickFun".into())
+}
+
+#[tauri::command]
+fn download_app_update() -> Result<String, String> {
+    Err("app updates come from your own release pipeline".into())
+}
+
+#[tauri::command]
+fn install_app_update() -> Result<String, String> {
+    Err("app updates come from your own release pipeline".into())
+}
+
+#[tauri::command]
+fn upload_local_media_recovery_asset(_asset: Value) -> Result<String, String> {
+    Err("recovery asset upload requires your panel configuration".into())
+}
+
+fn place_on_monitor(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let window = match app.get_webview_window("main") {
+        Some(w) => w,
+        None => return Ok(()),
+    };
+
+    if let Ok(monitors) = window.available_monitors() {
+        let choice = std::env::var("CLICKFUN_MONITOR").unwrap_or_else(|_| "largest".into());
+        let target: Option<usize> = match choice.as_str() {
+            "primary" => None, // keep primary
+            index => index.parse::<usize>().ok(),
+        };
+
+        let picked = match target {
+            Some(idx) => monitors.get(idx).map(|_| idx),
+            None => {
+                if choice == "largest" {
+                    monitors
+                        .iter()
+                        .enumerate()
+                        .max_by_key(|(_, m)| (m.size().width as u64) * (m.size().height as u64))
+                        .map(|(i, _)| i)
+                } else {
+                    None
+                }
+            }
+        };
+
+        if let Some(idx) = picked {
+            if let Some(m) = monitors.get(idx) {
+                let _ = window.set_position(tauri::PhysicalPosition::new(m.position().x, m.position().y));
+                let _ = window.set_size(tauri::PhysicalSize::new(m.size().width, m.size().height));
+            }
+        }
+    }
+
+    let _ = window.set_fullscreen(true);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            get_local_desktop_settings,
+            save_local_desktop_settings,
+            save_cached_app_config,
+            get_cached_app_config,
+            get_desktop_license_status,
+            list_sync_jobs,
+            recover_sync_jobs_from_local_prints,
+            clear_all_sync_jobs,
+            clear_completed_sync_jobs,
+            update_sync_job_status,
+            list_available_cameras,
+            list_available_printers,
+            list_print_ready_files,
+            open_printer_preferences,
+            print_test_page,
+            capture_original_photo,
+            start_selfbooth_camera_session,
+            start_native_camera_session,
+            print_image,
+            reprint_image,
+            apply_camera_control_settings,
+            get_digicamcontrol_install_status,
+            install_bundled_digicamcontrol,
+            run_camera_focus_test,
+            clear_local_capture_data,
+            download_to_local,
+            download_app_update,
+            install_app_update,
+            upload_local_media_recovery_asset,
+        ])
+        .setup(|app| {
+            place_on_monitor(app)?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running ClickFun");
 }
+

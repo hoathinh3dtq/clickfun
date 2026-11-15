@@ -25,3 +25,5 @@ EDSDK.dll
 # Local env
 .env
 *.local
+ui-pack/
+screenshot-layout-selection.png
