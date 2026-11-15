@@ -5,6 +5,8 @@ dist/
 node_modules/
 target/
 src-tauri/gen/
+TestResults/
+*.coverage.xml
 
 # IDE
 .vs/
