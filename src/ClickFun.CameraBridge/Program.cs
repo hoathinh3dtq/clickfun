@@ -11,7 +11,7 @@ BridgeLog.Info("ClickFun.CameraBridge starting…");
 var cameraBackend = (Environment.GetEnvironmentVariable("CLICKFUN_CAMERA") ?? "fake").Trim().ToLowerInvariant();
 ICameraService camera = cameraBackend switch
 {
-    "canon" or "canon-edsdk" => new CanonEdsdkCameraService(),
+    "canon" or "canon-edsdk" or "helper" => new CanonEdsHelperService(),
     _ => new FakeCameraService(),
 };
 BridgeLog.Info($"Camera backend: {camera.Backend}");

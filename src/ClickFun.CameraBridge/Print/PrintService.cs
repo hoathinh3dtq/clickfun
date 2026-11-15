@@ -84,7 +84,7 @@ public sealed class PrintService
 
                     var geo = FitGeometry.Compute(imgW, imgH, e.PageBounds.Width, e.PageBounds.Height, zoom, offsetX, offsetY);
 
-                    e.Graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                    e.Graphics!.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
                     e.Graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
                     e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                     e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;

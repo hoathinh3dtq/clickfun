@@ -10,6 +10,7 @@ ClickFun/
 ├─ src/ClickFun.CameraBridge/   .NET 8 (self-contained win-x64) IPC + camera + print
 ├─ src/ClickFun.CameraBridge.Tests/  xUnit tests
 ├─ app/                         Tauri 2 + React/TS kiosk UI (fullscreen)
+├─ tools/CanonEdsdkHelper.cs    Camera helper source (Canon EDSDK, user-provided)
 ├─ PRD.md                       product requirements (approved 2026-11-15)
 ├─ ANALYSIS.md                  static analysis of the reference app (REA)
 └─ README.md
@@ -20,76 +21,114 @@ ClickFun/
 ```
 ClickFun.exe (Tauri, WebView2) ──HTTP + X-ClickFun-Token──▶ 127.0.0.1:8737
                                                             ClickFun.CameraBridge.exe
-                                    ├─ camera Fake (dev) | Canon EDSDK (prod)
+                                    ├─ camera fake (dev) | Canon EDSDK via helper (prod)
                                     ├─ filter/overlay pipeline (OpenCV)
                                     └─ print pipeline → DNP DS-RX1 (System.Drawing.Printing)
 ```
 
+## Camera backends
+
+### `CLICKFUN_CAMERA=fake` (default, development)
+Synthetic OpenCV frames; full pipeline testable without hardware.
+
+### `CLICKFUN_CAMERA=canon` (production — Canon EOS R)
+Talks to the user's **CanonEdsdkHelper** process (JSON-lines over stdin/stdout),
+the same helper architecture validated on your R50:
+
+- helper exe resolution, first match wins:
+  1. `CLICKFUN_CANON_HELPER` → path to a prebuilt `CanonEdsdkHelper.exe`
+  2. `CLICKFUN_EDSDK_DIR` → folder with `EDSDK.dll` (+ `EdsImage.dll`); the bundled
+     `tools/CanonEdsdkHelper.cs` is compiled on demand with inbox csc.exe (x86) into
+     `%TEMP%\clickfun-canon\`
+  3. `canon-edsdk/CanonEdsdkHelper.exe` next to the bridge (production layout)
+
+- Canon EDSDK binaries are **never committed** (see `.gitignore`)
+- helper commands implemented: `status` (model/serial/battery), `liveViewStart/Stop/Frame`
+  (background pump, ~2.5 fps EVF), `capture` (full-res JPEG to photos dir), `importRecent`
+- **Video is NOT implemented** — the helper exposes photo capture only. Adding movie record
+  (EDSDK `kEdsCameraCommand_PressShutterButton` video mode + `EdsDownload` of the .MP4)
+  is the next milestone; `StartMovieAsync` returns false until then
+- Reaping note: every AF press in the helper releases `ShutterButton_OFF` in `finally`
+  (your R50 fix for the 0x81 busy hang) — keep this invariant if the helper is edited
+
+### Parity with your existing booth
+`vue-photobooth` (Electron + Vue) already ships this exact helper integration
+(`canonEdsdk.ts`). ClickFun reuses the same helper source, not a rewrite.
+
+### REA analysis of the helper (evidence)
+`canon-test-final-x86/CanonEdsdkHelper.exe` (sha256 `96ffc6c4…d7c28`):
+managed .NET Framework (v4 CLR), x86, IL-only, 28 P/Invokes — all into `EDSDK.dll`
+(`EdsInitializeSDK`…`EdsDownloadEvfImage`), no other native deps. Inspected with
+REA MCP (`inspect_managed_artifact` + `inspect_managed_native_boundaries`).
+
 ## Run (development)
 
 ```powershell
-# 1) Bridge (fake camera — works without hardware)
+# 1) Bridge — fake camera
 cd src\ClickFun.CameraBridge
-$env:CLICKFUN_CAMERA = "fake"
+$env:CLICKFUN_CAMERA = "fake"           # or "canon"
 $env:CLICKFUN_BRIDGE_TOKEN = "smoke-test-token"
 dotnet run
 
-# 2) UI (needs Rust toolchain — not installed yet)
+#    or against the real camera helper:
+$env:CLICKFUN_CAMERA = "canon"
+$env:CLICKFUN_EDSDK_DIR = "C:\path\to\folder\with\EDSDK.dll"   # e.g. your canon-test-final-x86 dir
+dotnet run
+
+# 2) UI
 cd ..\..\..\app
 npm install
-npm run dev        # vite only (port 1420)
-# or, once Rust is installed: npx tauri dev
+npx tauri dev                            # needs Rust (see below)
+# vite-only preview: npm run dev  → http://localhost:1420
 ```
 
-Smoke endpoints (token required except /health):
+## Toolchain notes (Windows, no admin available)
 
-```powershell
-curl http://127.0.0.1:8737/health
-curl -H "X-ClickFun-Token: $env:CLICKFUN_BRIDGE_TOKEN" -X POST http://127.0.0.1:8737/camera/connect
-curl -H "X-ClickFun-Token: $env:CLICKFUN_BRIDGE_TOKEN" http://127.0.0.1:8737/frame/latest -o frame.jpg
-curl -H "X-ClickFun-Token: $env:CLICKFUN_BRIDGE_TOKEN" -X POST http://127.0.0.1:8737/capture
-```
+- Rust via **rustup**; default toolchain is `stable-x86_64-pc-windows-gnullvm`
+  (pairs with **LLVM-MinGW**, installed at
+  `…\WinGet\Packages\MartinStorsjo.LLVM-MinGW.UCRT_…\llvm-mingw-20261020-ucrt-x86_64\bin` —
+  put it on PATH for `cargo`)
+- `stable-x86_64-pc-windows-gnu` was tried first; failed on missing `libgcc_eh` (LLVM-MinGW
+  ships compiler-rt/libunwind only). `msvc` target needs Build Tools (admin) — not used
+- `crate-type = ["rlib"]` (not cdylib) to avoid lld "too many exported symbols"
+- `cargo build` verified; `clickfun-app.exe` links
 
-## Camera
-
-- `CLICKFUN_CAMERA=fake` (default): synthetic frames — full pipeline works without hardware.
-- `CLICKFUN_CAMERA=canon`: Canon EOS R via Canon EDSDK. **Not yet wired** — set `CANON_EDSDK_PATH`
-  (folder containing EDSDK.dll), then implement `src/ClickFun.CameraBridge/Camera/CanonEdsdkCameraService.cs`
-  using your Canon EDSDK sample code. Canon EDSDK binaries are never committed.
+If you later install VS Build Tools (elevated), `rustup default stable-x86_64-pc-windows-msvc`
+is the preferred target.
 
 ## Tests
 
 ```powershell
-dotnet test
+dotnet test        # 8/8 passing (FitGeometry, settings round-trip, filter decode)
 ```
 
 ## Notable implementation decisions
 
-1. **Print pipeline lives in the .NET bridge** (System.Drawing.Printing), not in Rust.
-   The original booth's print logic proved out on this exact stack; raw Win32 GDI+ from
-   Rust would be a large, error-prone detour. Semantics are identical: zero margins,
-   orientation auto-detect from the image, rotate-90 fallback when the driver ignores
-   Landscape, fit-and-center with `zoom`/`offsetX`/`offsetY`, 2.5 s between copies
-   for the DS-RX1 dye-sub head. `zoom=0.98` default matches the observed behavior.
-2. **Frontend is a skeleton**, not feature-complete: capture loop, countdown, preview,
-   print, settings modal (hidden via double-click on brand mark). Video recording UI and
-   overlay/filter toggles land next.
-3. **Live view transport is poll-based HTTP JPEG** (`/frame/latest`, 250 ms interval).
-   Simple and debuggable; move to WebSocket if frame pacing becomes an issue.
-4. **XSDK.DAT / Sony binaries / Canon EDSDK binaries are never used or redistributed.**
+1. **Print pipeline lives in the .NET bridge** (System.Drawing.Printing), not in Rust —
+   same semantics as the original booth: zero margins, orientation auto-detect from the
+   image, rotate-90 fallback when the driver ignores Landscape, fit-and-center with
+   `zoom` (0.98 default)/`offsetX`/`offsetY`, 2.5 s between copies for the DS-RX1.
+   `FitGeometry` is pure and unit-tested.
+2. **Live view transport = poll-based HTTP JPEG** (`/frame/latest`). Simple, debuggable.
+   Move to WebSocket if frame pacing becomes an issue.
+3. **Canon helper = x86 .NET Framework process** spawned by the x64 bridge — chosen over
+   in-process EDSDK P/Invoke because the driver stack is 32-bit and hosted best isolated
+   (your production pattern). The bridge is 64-bit; the helper is 32-bit.
+4. **XSDK.DAT / Sony binaries never used.** EDSDK binaries never committed.
 
-## Pending inputs (blocking Canon path)
+## Pending inputs / milestones
 
-- Your Canon EDSDK sample code (path/contents) — to wire `CanonEdsdkCameraService`
-- Exact Canon model (R50 / R10 / R6…) — EDSDK property IDs differ
-- Final overlay template PNGs (placeholders will be generated until then)
+- [ ] Smoke test against the real camera (helper connect + live view, no shutter)
+- [ ] Video recording command in the helper (EDSDK movie mode) if video is in scope
+- [ ] Filter picker + overlay toggle in UI (backend filter/overlay endpoints already exist)
+- [ ] `npx tauri build` once installer bundling is wanted (needs WebView2 evergreen runtime on target)
 
 ## Security
 
 - Bridge binds `127.0.0.1` only; every endpoint except `/health` requires
-  `X-ClickFun-Token` (`CLICKFUN_BRIDGE_TOKEN`). Development default is
-  `clickfun-dev-token` with a loud warning — set a strong token for the booth.
-- No secrets in the repo; config via environment variables only.
+  `X-ClickFun-Token` (`CLICKFUN_BRIDGE_TOKEN`). Dev default is `clickfun-dev-token`
+  with a loud warning — set a strong token for the booth.
+- Secrets only via env vars; nothing in the repo.
 
 ## Logs & data
 
