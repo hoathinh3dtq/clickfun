@@ -1,0 +1,25 @@
+# Build outputs
+bin/
+obj/
+dist/
+node_modules/
+target/
+src-tauri/gen/
+
+# IDE
+.vs/
+.idea/
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
+
+# NEVER commit camera SDKs
+EDSDK.dll
+**/SDK/**
+*.cab
+
+# Local env
+.env
+*.local

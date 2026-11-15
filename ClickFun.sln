@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{946D1A7E-006D-4672-97EE-2EE6664D203F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClickFun.CameraBridge", "src\ClickFun.CameraBridge\ClickFun.CameraBridge.csproj", "{63381BAF-3396-450D-A507-6EDA9F5AA049}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClickFun.CameraBridge.Tests", "src\ClickFun.CameraBridge.Tests\ClickFun.CameraBridge.Tests.csproj", "{192C4587-F1F0-4281-A4E3-1FE5DB4C6246}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{63381BAF-3396-450D-A507-6EDA9F5AA049}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{63381BAF-3396-450D-A507-6EDA9F5AA049}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{63381BAF-3396-450D-A507-6EDA9F5AA049}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{63381BAF-3396-450D-A507-6EDA9F5AA049}.Release|Any CPU.Build.0 = Release|Any CPU
+		{192C4587-F1F0-4281-A4E3-1FE5DB4C6246}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{192C4587-F1F0-4281-A4E3-1FE5DB4C6246}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{192C4587-F1F0-4281-A4E3-1FE5DB4C6246}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{192C4587-F1F0-4281-A4E3-1FE5DB4C6246}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{63381BAF-3396-450D-A507-6EDA9F5AA049} = {946D1A7E-006D-4672-97EE-2EE6664D203F}
+		{192C4587-F1F0-4281-A4E3-1FE5DB4C6246} = {946D1A7E-006D-4672-97EE-2EE6664D203F}
+	EndGlobalSection
+EndGlobal
