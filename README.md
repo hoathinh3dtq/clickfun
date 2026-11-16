@@ -150,6 +150,19 @@ third-party product assets) manages the booth without any cloud dependency.
 It is served by the bridge at `http://127.0.0.1:8737/admin/` and talks to the
 bridge over token-gated `/admin/*` endpoints.
 
+### In-app entry point (kiosk)
+
+The Tauri booth window itself opens the admin — no browser needed:
+
+- Press **Ctrl+Shift+A** inside the booth app, **or**
+- Tap the small **gear button** in the bottom-left corner (subtle by default,
+  hover/focus brightens it).
+
+Both invoke the `open_admin` Tauri command, which opens (or focuses) a
+dedicated **ClickFun Admin** window (external URL `http://127.0.0.1:8737/admin/`,
+bordered, 1280×800). The booth UI bundle is left untouched — the entry points
+are injected at runtime by the Tauri shell, so they survive UI rebuilds.
+
 Data layer (owned by the bridge, `AdminStore`):
 
 - `%ProgramData%\ClickFun\admin\app-config-cache.json` — layouts / frames / categories /

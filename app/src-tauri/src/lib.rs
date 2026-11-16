@@ -221,6 +221,84 @@ fn upload_local_media_recovery_asset(_asset: Value) -> Result<String, String> {
     Err("recovery asset upload requires your panel configuration".into())
 }
 
+// Open (or focus) the local ClickFun admin window.
+#[tauri::command]
+async fn open_admin(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("admin") {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url = "http://127.0.0.1:8737/admin/"
+        .parse()
+        .map_err(|e| format!("bad admin url: {e}"))?;
+    tauri::WebviewWindowBuilder::new(&app, "admin", tauri::WebviewUrl::External(url))
+        .title("ClickFun Admin")
+        .decorations(true)
+        .resizable(true)
+        .inner_size(1280.0, 800.0)
+        .always_on_top(false)
+        .build()
+        .map(|_| ())
+        .map_err(|e| format!("failed to open admin window: {e}"))
+}
+
+fn inject_admin_entry_point(app: &tauri::App) {
+    // The booth UI is a prebuilt bundle we don't want to fork; instead we inject a
+    // tiny runtime hook: Ctrl+Shift+A and a discreet floating gear open the admin.
+    if let Some(window) = app.get_webview_window("main") {
+        let script = r#"
+(function () {
+  var root = document.documentElement;
+  function invokeOpenAdmin() {
+    try {
+      var i = window.__TAURI_INTERNALS__;
+      if (i && i.invoke) { i.invoke('open_admin', {}); return true; }
+      var t = window.__TAURI__;
+      if (t && t.core && t.core.invoke) { t.core.invoke('open_admin', {}); return true; }
+    } catch (e) { console.error('open_admin failed', e); }
+    return false;
+  }
+  function mount() {
+    if (document.getElementById('cf-admin-fab')) return;
+    var btn = document.createElement('button');
+    btn.id = 'cf-admin-fab';
+    btn.type = 'button';
+    btn.title = 'Mo admin local (Ctrl+Shift+A)';
+    btn.setAttribute('aria-label', 'Mo admin local');
+    btn.innerHTML = '&#9881;';
+    btn.style.cssText = [
+      'position:fixed','left:14px','bottom:14px','width:44px','height:44px',
+      'border:none','border-radius:50%','z-index:2147483647','cursor:pointer',
+      'font-size:22px','line-height:1','color:#fff','opacity:0.30',
+      'background:linear-gradient(135deg,#f86fa5,#d84b7c)',
+      'box-shadow:0 4px 14px rgba(0,0,0,0.25)','transition:opacity .2s'
+    ].join(';');
+    btn.addEventListener('mouseenter', function () { btn.style.opacity = '0.92'; });
+    btn.addEventListener('mouseleave', function () { btn.style.opacity = '0.30'; });
+    btn.addEventListener('click', function (e) { e.preventDefault(); invokeOpenAdmin(); });
+    document.body.appendChild(btn);
+  }
+  window.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
+      e.preventDefault();
+      invokeOpenAdmin();
+    }
+  }, true);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mount);
+  } else {
+    mount();
+  }
+  // Retry once shortly after load in case of a late-mounted SPA shell.
+  setTimeout(mount, 1500);
+})();
+        "#;
+        if let Err(e) = window.eval(script) {
+            eprintln!("failed to inject admin entry point: {e}");
+        }
+    }
+}
+
 fn place_on_monitor(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let window = match app.get_webview_window("main") {
         Some(w) => w,
@@ -287,6 +365,7 @@ pub fn run() {
             start_native_camera_session,
             print_image,
             reprint_image,
+            open_admin,
             apply_camera_control_settings,
             get_digicamcontrol_install_status,
             install_bundled_digicamcontrol,
@@ -299,6 +378,7 @@ pub fn run() {
         ])
         .setup(|app| {
             place_on_monitor(app)?;
+            inject_admin_entry_point(app);
             Ok(())
         })
         .run(tauri::generate_context!())
