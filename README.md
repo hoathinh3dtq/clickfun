@@ -3,6 +3,10 @@
 Independent photo-booth application rebuilt from a clean, owned implementation.
 Windows x64 · .NET 8 camera/print bridge + Tauri 2 (Rust) kiosk UI.
 
+**Second PC / fresh machine?** See [`docs/FRESH-MACHINE.md`](docs/FRESH-MACHINE.md) —
+exact clone → build → run steps, plus what is intentionally NOT in this repo
+and where to transfer it from.
+
 ## Layout
 
 ```
