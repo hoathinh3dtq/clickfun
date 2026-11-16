@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "ClickFun kiosk main window",
+  "windows": [
+    "main",
+    "admin"
+  ],
+  "permissions": [
+    "core:default",
+    "fs:default",
+    "fs:allow-applocaldata-write-recursive",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "C:/ProgramData/ClickFun/admin/**" }
+      ]
+    }
+  ]
+}

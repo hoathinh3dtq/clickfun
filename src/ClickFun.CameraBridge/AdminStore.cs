@@ -39,7 +39,7 @@ public sealed class AdminStore
             {
                 var raw = File.ReadAllText(legacyRoaming);
                 // Rewrite image paths from the original app dir to the ClickFun copy.
-                raw = raw.Replace(@"com.hihi.boothv2\offline-assets", @"com.clickfun.booth\offline-assets");
+                raw = raw.Replace("com.hihi.boothv2", "com.clickfun.booth");
                 File.WriteAllText(CachePath, raw);
                 BridgeLog.Info("Admin: seeded app-config-cache.json from legacy offline copy.");
                 return;

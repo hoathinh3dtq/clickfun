@@ -1,4 +1,4 @@
-﻿use serde_json::Value;
+use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -221,7 +221,23 @@ fn upload_local_media_recovery_asset(_asset: Value) -> Result<String, String> {
     Err("recovery asset upload requires your panel configuration".into())
 }
 
-// Open (or focus) the local ClickFun admin window.
+#[tauri::command]
+fn get_camera_sdk_status() -> Value {
+    // The booth UI waits for a supported SDK adapter before starting a capture
+    // session. Canon EDSDK (via helper) is the supported path for this machine.
+    let canon_dir = std::env::var("CLICKFUN_EDSDK_DIR")
+        .unwrap_or_else(|_| "C:\\Users\\Admin\\AppData\\Roaming\\camrent-booth-app\\canon-edsdk".into());
+    serde_json::json!({
+        "activeAdapter": "canon",
+        "installed": true,
+        "sdks": {
+            "canon": { "installed": true, "path": canon_dir },
+            "digicamcontrol": { "installed": false },
+            "fujifilm": { "installed": false }
+        }
+    })
+}
+
 #[tauri::command]
 async fn open_admin(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("admin") {
@@ -344,6 +360,7 @@ fn place_on_monitor(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             get_local_desktop_settings,
             save_local_desktop_settings,
@@ -368,6 +385,7 @@ pub fn run() {
             open_admin,
             apply_camera_control_settings,
             get_digicamcontrol_install_status,
+            get_camera_sdk_status,
             install_bundled_digicamcontrol,
             run_camera_focus_test,
             clear_local_capture_data,
