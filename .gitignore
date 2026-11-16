@@ -19,8 +19,10 @@ Thumbs.db
 
 # NEVER commit camera SDKs
 EDSDK.dll
+EdsImage.dll
 **/SDK/**
 *.cab
+tools/canon-edsdk/
 
 # Local env
 .env

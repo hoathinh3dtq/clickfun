@@ -31,6 +31,26 @@ Verified on 2026-11-16 by cloning this repo into a clean directory and rebuildin
    `EDSDK.dll` + `EdsImage.dll` (the bridge compiles `tools/CanonEdsdkHelper.cs`
    on demand with the inbox x86 csc.exe, or use a prebuilt `CanonEdsdkHelper.exe`).
 
+## 3-machine plan (home PC → booth PC with Canon + DS-RX1 → work PC)
+
+Two items exist **only on this machine** and cannot be pushed publicly:
+
+1. `ui-pack/` — the extracted kiosk UI (HiHiBooth's product, gitignored on purpose)
+2. `canon-edsdk/` — Canon's SDK binaries (`EDSDK.dll`, `EdsImage.dll`, helper)
+
+Move them privately once with a USB stick / private LAN share (never GitHub):
+
+```
+[home PC]  copy C:\Users\Admin\Music\HihiBooth-Rebuild\ClickFun\ui-pack      -> USB:\clickfun-private-files\ui-pack
+           copy C:\Users\Admin\AppData\Roaming\camrent-booth-app\canon-edsdk    -> USB:\clickfun-private-files\canon-edsdk
+[booth PC] tools\setup-machine.ps1 -UiPackSource "E:\clickfun-private-files\ui-pack" -EdsdkSource "E:\clickfun-private-files\canon-edsdk"
+[work PC]  (coding only) same script without -EdsdkSource if you don't need the camera
+```
+
+Everything else is already on GitHub (`d9f83d2`), verified by a clean clone:
+`dotnet test` 13/13, `npm run build:admin` OK. The `CLICKFUN_EDSDK_DIR` /
+`CLICKFUN_CANON_HELPER` env vars are set by the same script for the booth PC.
+
 ## Prerequisites (Windows)
 
 1. **Git**
