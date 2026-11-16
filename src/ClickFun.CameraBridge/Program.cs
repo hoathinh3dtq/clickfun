@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.AspNetCore.StaticFiles;
@@ -183,6 +183,28 @@ app.MapPost("/print", async (HttpRequest req) =>
     if (request is null) return Results.BadRequest(new { error = "invalid print request" });
     var printer = new PrintService(settings);
     var result = printer.Print(request);
+
+    // Print history (local single-machine build; JSONL, one line per print attempt).
+    try
+    {
+        var logPath = Path.Combine(settings.LogsDir, "prints.jsonl");
+        var line = JsonSerializer.Serialize(new
+        {
+            ts = DateTimeOffset.UtcNow.ToString("O"),
+            file = request.ImagePath,
+            copies = request.Copies,
+            paperLayout = request.PaperLayout ?? "auto",
+            printer = request.PrinterName ?? "(default)",
+            success = result.Success,
+            message = result.Message,
+        });
+        await File.AppendAllTextAsync(logPath, line + Environment.NewLine);
+    }
+    catch (Exception ex)
+    {
+        BridgeLog.Warn($"prints.jsonl append failed: {ex.Message}");
+    }
+
     return result.Success ? Results.Ok(result) : Results.Problem(result.Message, statusCode: 502);
 });
 
@@ -531,6 +553,166 @@ app.MapGet("/admin/logs", (int? tail) =>
     return Results.Ok(all.Skip(Math.Max(0, all.Length - lines)));
 });
 
+// Filter catalog + preview against a captured photo.
+app.MapGet("/admin/filters", () => Results.Ok(new[]
+{
+    new { id = "none", name = "None", label = "Gốc" },
+    new { id = "grayscale", name = "grayscale", label = "Đen trắng" },
+    new { id = "sepia", name = "sepia", label = "Sepia" },
+    new { id = "vintage", name = "vintage", label = "Vintage" },
+}));
+
+app.MapGet("/admin/filter-preview/{date}/{file}", (string date, string file, HttpRequest req) =>
+{
+    var root = ResolvePhotosRoot(settings);
+    if (root is null) return Results.NotFound();
+    var resolved = ResolvePhotoPath(root, date, file);
+    if (resolved is null) return Results.NotFound();
+
+    var filter = req.Query["filter"].ToString();
+    var bytes = File.ReadAllBytes(resolved);
+    bytes = FilterEngine.Apply(bytes, filter);
+    return Results.Bytes(bytes, "image/jpeg");
+});
+
+// Print history ----------
+
+app.MapGet("/admin/prints", (int? tail) =>
+{
+    var lines = tail is > 0 and <= 500 ? tail.Value : 100;
+    var logPath = Path.Combine(settings.LogsDir, "prints.jsonl");
+    if (!File.Exists(logPath)) return Results.Ok(new JsonArray());
+    var all = File.ReadAllLines(logPath);
+    var outLines = all.Skip(Math.Max(0, all.Length - lines)).ToArray();
+    var arr = new JsonArray();
+    foreach (var l in outLines)
+    {
+        try { arr.Add(JsonNode.Parse(l)); } catch { /* skip malformed line */ }
+    }
+    return Results.Ok(arr);
+});
+
+// ---------- Photo sessions (captured files on disk) ----------
+
+var photoExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp" };
+
+static string SanitizeSessionDate(string date)
+{
+    var d = date.Trim();
+    if (!System.Text.RegularExpressions.Regex.IsMatch(d, @"^\d{4}-\d{2}-\d{2}$|^\d{8}$"))
+        throw new ArgumentException("date must be yyyy-MM-dd or yyyyMMdd");
+    return d;
+}
+
+static string? ResolvePhotosRoot(SettingsStore s)
+{
+    var root = s.Load().PhotosRoot;
+    if (string.IsNullOrWhiteSpace(root)) return null;
+    var full = Path.GetFullPath(root);
+    return Directory.Exists(full) ? full : null;
+}
+
+// Resolve a photos-root-relative path segment chain, rejecting traversal.
+static string? ResolvePhotoPath(string photosRoot, string date, string file)
+{
+    var dayDir = Path.Combine(photosRoot, SanitizeSessionDate(date));
+    var full = Path.GetFullPath(Path.Combine(dayDir, file));
+    var rootFull = Path.GetFullPath(dayDir);
+    if (!full.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        return null;
+    return File.Exists(full) ? full : null;
+}
+
+
+app.MapGet("/admin/sessions", () =>
+{
+    try
+    {
+        var root = ResolvePhotosRoot(settings);
+        if (root is null) return Results.Ok(new JsonArray());
+        var dayDirs = Directory.EnumerateDirectories(root)
+            .Select(d => Path.GetFileName(d))
+            .Where(n => System.Text.RegularExpressions.Regex.IsMatch(n, @"^\d{4}-\d{2}-\d{2}$|^\d{8}$"))
+            .OrderByDescending(n => n, StringComparer.Ordinal)
+            .ToList();
+
+        var arr = new JsonArray();
+        foreach (var name in dayDirs)
+        {
+            var dir = Path.Combine(root, name);
+            var files = Directory.EnumerateFiles(dir)
+                .Where(f => photoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                .ToList();
+            var bytes = files.Sum(f => new FileInfo(f).Length);
+            arr.Add(new JsonObject
+            {
+                ["date"] = name,
+                ["photos"] = files.Count,
+                ["bytes"] = bytes,
+            });
+        }
+        return Results.Ok(arr);
+    }
+    catch (Exception ex)
+    {
+        BridgeLog.Error("admin/sessions failed", ex);
+        return Results.Problem(ex.Message, statusCode: 500);
+    }
+});
+
+app.MapGet("/admin/sessions/{date}", (string date) =>
+{
+    try { date = SanitizeSessionDate(date); }
+    catch { return Results.BadRequest(new { error = "date must be yyyyMMdd" }); }
+
+    var root = ResolvePhotosRoot(settings);
+    if (root is null) return Results.Ok(new JsonArray());
+
+    var dayDir = Path.Combine(root, date);
+    if (!Directory.Exists(dayDir)) return Results.Ok(new JsonArray());
+
+    var files = Directory.EnumerateFiles(dayDir)
+        .Where(f => photoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+        .Select(f => new FileInfo(f))
+        .OrderByDescending(fi => fi.LastWriteTimeUtc)
+        .ToList();
+
+    var arr = new JsonArray();
+    foreach (var fi in files)
+    {
+        arr.Add(new JsonObject
+        {
+            ["name"] = fi.Name,
+            ["bytes"] = fi.Length,
+            ["modified"] = fi.LastWriteTimeUtc.ToString("O"),
+        });
+    }
+    return Results.Ok(arr);
+});
+
+// Photo bytes endpoint (path-sanitized to the photos root, mirrors /admin/framefile).
+app.MapGet("/admin/photo/{date}/{file}", (string date, string file) =>
+{
+    var root = ResolvePhotosRoot(settings);
+    if (root is null) return Results.NotFound();
+    var resolved = ResolvePhotoPath(root, date, file);
+    if (resolved is null) return Results.NotFound();
+    var ext = Path.GetExtension(resolved).TrimStart('.').ToLowerInvariant();
+    var mime = ext == "png" ? "image/png" : ext == "webp" ? "image/webp" : "image/jpeg";
+    return Results.File(resolved, mime);
+});
+
+app.MapDelete("/admin/photo/{date}/{file}", (string date, string file) =>
+{
+    var root = ResolvePhotosRoot(settings);
+    if (root is null) return Results.NotFound();
+    var resolved = ResolvePhotoPath(root, date, file);
+    if (resolved is null) return Results.NotFound();
+    try { File.Delete(resolved); }
+    catch (Exception ex) { return Results.Problem(ex.Message, statusCode: 500); }
+    return Results.Ok(new { deleted = file });
+});
+
 // Serve the admin UI (static build). API calls still require the bridge token.
 static string? ResolveAdminDist()
 {
@@ -612,3 +794,4 @@ BridgeLog.Info($"Listening on http://127.0.0.1:{port} (token auth on, health exe
 await app.RunAsync();
 
 internal sealed record PreviewRequest(string? ImagePath, string? Filter, string? OverlayTemplate);
+

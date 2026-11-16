@@ -17,7 +17,9 @@ public sealed class SettingsStore
     public SettingsStore()
     {
         RootDir = Path.Combine(ProgramData, "ClickFun");
-        SettingsPath = Path.Combine(RootDir, "settings.json");
+        // Bridge-owned settings file. The booth app (com.hihi.boothv2) also writes
+        // its own settings to ProgramData\ClickFun\settings.json, so never share it.
+        SettingsPath = Path.Combine(RootDir, "bridge-settings.json");
         PhotosRoot = Path.Combine(RootDir, "photos");
         LogsDir = Path.Combine(RootDir, "logs");
         Directory.CreateDirectory(RootDir);

@@ -12,6 +12,11 @@ import {
   FileTextOutlined,
   LockOutlined,
   LogoutOutlined,
+  BarChartOutlined,
+  CameraFilled,
+  PrinterOutlined,
+  ExperimentOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons-vue'
 
 const route = useRoute()
@@ -21,14 +26,34 @@ const needsToken = computed(() => !token.value)
 const tokenDraft = ref('')
 const error = ref('')
 
-const menuItems = [
-  { key: 'dashboard', icon: DashboardOutlined, label: 'Tổng quan' },
-  { key: 'frames', icon: PictureOutlined, label: 'Kho frame' },
-  { key: 'layouts', icon: LayoutOutlined, label: 'Layout in' },
-  { key: 'categories', icon: TagsOutlined, label: 'Danh mục' },
-  { key: 'camera', icon: CameraOutlined, label: 'Máy ảnh & in' },
-  { key: 'settings', icon: SettingOutlined, label: 'Cài đặt booth' },
-  { key: 'logs', icon: FileTextOutlined, label: 'Nhật ký' },
+const menuGroups = [
+  {
+    label: 'Vận hành',
+    items: [
+      { key: 'dashboard', icon: DashboardOutlined, label: 'Tổng quan' },
+      { key: 'stats', icon: BarChartOutlined, label: 'Thống kê' },
+      { key: 'sessions', icon: CameraFilled, label: 'Phiên chụp' },
+      { key: 'prints', icon: PrinterOutlined, label: 'Lịch sử in' },
+    ],
+  },
+  {
+    label: 'Nội dung',
+    items: [
+      { key: 'frames', icon: PictureOutlined, label: 'Kho frame' },
+      { key: 'layouts', icon: LayoutOutlined, label: 'Layout in' },
+      { key: 'categories', icon: TagsOutlined, label: 'Danh mục' },
+      { key: 'filters', icon: ExperimentOutlined, label: 'Bộ lọc' },
+    ],
+  },
+  {
+    label: 'Máy & cài đặt',
+    items: [
+      { key: 'camera', icon: CameraOutlined, label: 'Máy ảnh & in' },
+      { key: 'settings', icon: SettingOutlined, label: 'Cài đặt booth' },
+      { key: 'license', icon: SafetyCertificateOutlined, label: 'Bản quyền & máy' },
+      { key: 'logs', icon: FileTextOutlined, label: 'Nhật ký' },
+    ],
+  },
 ]
 
 const selectedKeys = computed(() => [route.name || 'dashboard'])
@@ -87,12 +112,17 @@ onUnmounted(() => window.removeEventListener('clickfun-admin:unauthorized', onUn
           <div class="brand-tag">LOCAL ADMIN</div>
         </div>
       </div>
-      <a-menu theme="dark" mode="inline" :selected-keys="selectedKeys" class="nav" @click="m => router.push({ name: m.key })">
-        <a-menu-item v-for="item in menuItems" :key="item.key">
-          <component :is="item.icon" />
-          <span>{{ item.label }}</span>
-        </a-menu-item>
-      </a-menu>
+      <nav class="nav">
+        <div v-for="group in menuGroups" :key="group.label" class="nav-group">
+          <div class="nav-group-label">{{ group.label }}</div>
+          <a-menu mode="inline" :selected-keys="selectedKeys" class="nav-menu" @click="m => router.push({ name: m.key })">
+            <a-menu-item v-for="item in group.items" :key="item.key">
+              <component :is="item.icon" />
+              <span>{{ item.label }}</span>
+            </a-menu-item>
+          </a-menu>
+        </div>
+      </nav>
       <div class="sidebar-foot">
         <button class="logout" @click="logout"><LogoutOutlined /> Đăng xuất</button>
         <div class="foot-note">Dữ liệu lưu local<br />ProgramData\ClickFun\admin</div>

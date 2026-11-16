@@ -64,5 +64,12 @@ export const api = {
   listCategories: () => request('GET', '/admin/categories'),
   createCategory: (name) => request('POST', '/admin/categories', { name }),
   deleteCategory: (id) => request('DELETE', `/admin/categories/${id}`),
+  prints: (tail = 100) => request('GET', `/admin/prints?tail=${tail}`),
+  listSessions: () => request('GET', '/admin/sessions'),
+  listSessionPhotos: (date) => request('GET', `/admin/sessions/${date}`),
+  photoUrl: (date, file) => `/admin/photo/${encodeURIComponent(date)}/${encodeURIComponent(file)}`,
+  deletePhoto: (date, file) => request('DELETE', `/admin/photo/${encodeURIComponent(date)}/${encodeURIComponent(file)}`),
+  filters: () => request('GET', '/admin/filters'),
+  filterPreviewUrl: (date, file, filter) => `/admin/filter-preview/${encodeURIComponent(date)}/${encodeURIComponent(file)}?filter=${encodeURIComponent(filter || 'none')}`,
   logs: (tail = 150) => request('GET', `/admin/logs?tail=${tail}`),
 }
