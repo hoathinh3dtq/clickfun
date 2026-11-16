@@ -56,21 +56,47 @@ fn save_local_desktop_settings(payload: Value) -> bool {
 }
 
 #[tauri::command]
-fn save_cached_app_config(_payload: Value) -> Value {
-    serde_json::json!({ "ok": true })
+fn save_cached_app_config(payload: Value) -> Value {
+    // Persist the booth app config through the admin data layer so the
+    // local admin UI and the booth always see the same file.
+    let dir = program_data_dir().join("admin");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("app-config-cache.json");
+    match std::fs::write(&path, serde_json::to_string_pretty(&payload).unwrap_or_default()) {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
 }
 
 #[tauri::command]
 fn get_cached_app_config() -> Value {
-    // Single-machine build (owner request): report as activated so the app
-    // boots straight into the photobooth flow without panel redemption.
-    serde_json::json!({
-        "server": {
-            "apiKey": "LOCAL-SINGLE-MACHINE",
-            "machineAccessToken": "",
-            "machineAccessTokenExpiresAt": ""
+    // Single-machine build: the admin UI owns app-config-cache.json.
+    // Seeded from the local install on first run; never talks to any panel.
+    let path = program_data_dir().join("admin").join("app-config-cache.json");
+    let mut cfg = std::fs::read_to_string(&path).ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({
+            "version": 1,
+            "paymentSettings": {},
+            "layouts": [],
+            "categories": [],
+            "filters": [],
+            "framesByShape": {},
+            "updatedAtMs": Value::Null,
+            "lastSyncAtMs": Value::Null
+        }));
+
+    if let Some(obj) = cfg.as_object_mut() {
+        // The booth UI requires an activated-looking server block to boot.
+        let server = obj.entry("server".to_string()).or_insert(serde_json::json!({}));
+        if let Some(s) = server.as_object_mut() {
+            s.entry("apiKey".to_string()).or_insert(serde_json::json!("LOCAL-SINGLE-MACHINE"));
+            s.entry("machineAccessToken".to_string()).or_insert(serde_json::json!(""));
+            s.entry("machineAccessTokenExpiresAt".to_string()).or_insert(serde_json::json!(""));
         }
-    })
+    }
+
+    cfg
 }
 
 #[tauri::command]
@@ -231,7 +257,9 @@ fn place_on_monitor(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
         }
     }
 
-    let _ = window.set_fullscreen(true);
+    if std::env::var("CLICKFUN_FULLSCREEN").as_deref() == Ok("1") {
+        let _ = window.set_fullscreen(true);
+    }
     Ok(())
 }
 

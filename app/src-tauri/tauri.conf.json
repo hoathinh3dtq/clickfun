@@ -9,12 +9,12 @@
   "app": {
     "windows": [
       {
-        "fullscreen": true,
-        "resizable": false,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "width": 1920,
-        "height": 1080,
+        "fullscreen": false,
+        "resizable": true,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "width": 1440,
+        "height": 900,
         "title": "ClickFun"
       }
     ],

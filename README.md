@@ -142,3 +142,50 @@ dotnet test        # 13/13 passing (FitGeometry, PaperDetect, settings round-tri
 - Logs: `%ProgramData%\ClickFun\logs\bridge-YYYYMMDD.log`
 - Settings: `%ProgramData%\ClickFun\settings.json`
 - Captures: `%ProgramData%\ClickFun\photos\YYYY-MM-DD\`
+
+## Local admin (`/admin/`)
+
+A self-contained local admin UI (Vue 3 + Ant Design Vue, fully own code — no
+third-party product assets) manages the booth without any cloud dependency.
+It is served by the bridge at `http://127.0.0.1:8737/admin/` and talks to the
+bridge over token-gated `/admin/*` endpoints.
+
+Data layer (owned by the bridge, `AdminStore`):
+
+- `%ProgramData%\ClickFun\admin\app-config-cache.json` — layouts / frames / categories /
+  paymentSettings / filters used by the booth UI (read by the Tauri `get_cached_app_config`
+  adapter). Seeded on first run from a local offline copy if present.
+- `%ProgramData%\ClickFun\admin\frames\{id}.{png,jpg,webp}` — uploaded frame images.
+
+Features:
+
+- Dashboard (frames/layouts/categories, camera backend, printer availability, version)
+- Frame library: upload (PNG/JPG/WebP), rename, shape (square/grid/strip), toggle active,
+  delete, hole-count preview, search + shape filter
+- Layouts: create/edit/delete (name, shape, render mode, photos per strip, price, active)
+- Categories: create/delete
+- Booth settings: countdown, copies, print offsets/zoom, default filter, paper layout,
+  photos root — written through the bridge `/settings`
+- Camera & printer page: connect/disconnect/test capture, DS-RX1 driver + paper detection
+- Logs viewer (today's bridge log tail)
+
+Access control: `/admin` (HTML/JS/CSS/frame images) is served without a token so a
+keyboard/touch booth can reach it; every `/admin/*` API call requires
+`X-ClickFun-Token` — the UI asks for it once and stores it in `localStorage`.
+Set `CLICKFUN_BRIDGE_TOKEN` to a strong value on the booth machine.
+
+Build and run:
+
+```
+cd app
+npm run build:admin          # builds app/admin/dist (served automatically by the bridge)
+cd ../src/ClickFun.CameraBridge && dotnet run
+```
+
+The bridge resolves the admin bundle via `CLICKFUN_ADMIN_DIST` or by walking up
+from its working directory to `app/admin/dist`.
+
+Single-machine note: this build is intentionally self-contained — licensing/activation
+is disabled (owner request), the booth boots straight into `#/layout-selection`, and
+the three `get_cached_app_config` / `save_cached_app_config` /
+`get_desktop_license_status` Tauri commands are backed by the local cache file above.
