@@ -27,23 +27,40 @@ Verified on 2026-11-16 by cloning this repo into a clean directory and rebuildin
    SDK; never in this repo. Set `CLICKFUN_EDSDK_DIR` (and `CLICKFUN_CANON_HELPER`
    for the prebuilt helper) on the booth PC.
 3. **Photos, frames, license/keys** — `%ProgramData%\ClickFun` on each machine.
-4. EDSDK full build needs `CLICKFUN_EDSDK_DIR` pointing to a folder with
+4. **`booth-admin-cache/admin/`** — the seeded offline cache (frame list with
+   holes metadata, layouts, categories, payment/print paths) plus the frame
+   images, with every `path`/`url` rewritten to machine-independent
+   `%ProgramData%\ClickFun\admin\frames\{id}.png`. Install it with
+   `setup-machine.ps1 -BoothAdminCacheSource "...\booth-admin-cache"` — without it
+   the booth on a fresh PC boots with an empty frame grid (the original app's
+   legacy cache lived under `%AppData%\com.hihi.boothv2`, which does not exist on
+   a fresh machine). To re-stage this folder on a machine that has
+   `%ProgramData%\ClickFun\admin` populated, run
+   `tools\stage-booth-admin-cache.ps1 -Stage <target-dir>`.
+5. EDSDK full build needs `CLICKFUN_EDSDK_DIR` pointing to a folder with
    `EDSDK.dll` + `EdsImage.dll` (the bridge compiles `tools/CanonEdsdkHelper.cs`
    on demand with the inbox x86 csc.exe, or use a prebuilt `CanonEdsdkHelper.exe`).
 
 ## 3-machine plan (home PC → booth PC with Canon + DS-RX1 → work PC)
 
-Two items exist **only on this machine** and cannot be pushed publicly:
+Two pieces exist **only on this machine** and cannot be pushed publicly:
 
 1. `ui-pack/` — the extracted kiosk UI (HiHiBooth's product, gitignored on purpose)
 2. `canon-edsdk/` — Canon's SDK binaries (`EDSDK.dll`, `EdsImage.dll`, helper)
+
+Plus a third self-contained seed for fresh PCs:
+
+3. `booth-admin-cache/` — `%ProgramData%\ClickFun\admin` seed (offline cache +
+   frame images, machine-independent absolute paths). Without it a fresh booth
+   PC boots with an empty frame grid.
 
 Move them privately once with a USB stick / private LAN share (never GitHub):
 
 ```
 [home PC]  copy C:\Users\Admin\Music\HihiBooth-Rebuild\ClickFun\ui-pack      -> USB:\clickfun-private-files\ui-pack
            copy C:\Users\Admin\AppData\Roaming\camrent-booth-app\canon-edsdk    -> USB:\clickfun-private-files\canon-edsdk
-[booth PC] tools\setup-machine.ps1 -UiPackSource "E:\clickfun-private-files\ui-pack" -EdsdkSource "E:\clickfun-private-files\canon-edsdk"
+           (clickfun-private.zip already contains ui-pack\, canon-edsdk\ and booth-admin-cache\)
+[booth PC] tools\setup-machine.ps1 -UiPackSource "E:\clickfun-private-files\ui-pack" -EdsdkSource "E:\clickfun-private-files\canon-edsdk" -BoothAdminCacheSource "E:\clickfun-private-files\booth-admin-cache"
 [work PC]  (coding only) same script without -EdsdkSource if you don't need the camera
 ```
 

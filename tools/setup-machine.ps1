@@ -7,7 +7,10 @@
 
 param(
   [Parameter(Mandatory = $true)][string]$UiPackSource,
-  [Parameter(Mandatory = $false)][string]$EdsdkSource
+  [Parameter(Mandatory = $false)][string]$EdsdkSource,
+  # Folder containing "admin\app-config-cache.json" (frames seed with local
+  # %ProgramData% paths, from booth-admin-cache in clickfun-private.zip).
+  [Parameter(Mandatory = $false)][string]$BoothAdminCacheSource
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +43,23 @@ if ($EdsdkSource) {
     [Environment]::SetEnvironmentVariable('CLICKFUN_CANON_HELPER', $helper, 'User')
   }
   Write-Host "    Set user env vars CLICKFUN_EDSDK_DIR (+CLICKFUN_CANON_HELPER). Open a NEW terminal to pick them up."
+}
+
+if ($BoothAdminCacheSource) {
+  $seedAdmin = Join-Path $BoothAdminCacheSource 'admin'
+  if (-not (Test-Path (Join-Path $seedAdmin 'app-config-cache.json'))) {
+    Write-Error "booth admin cache source must contain 'admin\app-config-cache.json' (got '$BoothAdminCacheSource')."
+  }
+  $destAdmin = Join-Path $env:ProgramData 'ClickFun\admin'
+  Write-Host "==> Seeding booth admin cache -> $destAdmin"
+  New-Item -ItemType Directory -Force $destAdmin | Out-Null
+  if (Test-Path $destAdmin) {
+    Copy-Item $destAdmin "$destAdmin.pre-seed-$(Get-Date -Format yyyyMMddHHmmss)" -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  Copy-Item (Join-Path $seedAdmin 'app-config-cache.json') (Join-Path $destAdmin 'app-config-cache.json') -Force
+  New-Item -ItemType Directory -Force (Join-Path $destAdmin 'frames') | Out-Null
+  Copy-Item (Join-Path $seedAdmin 'frames\*') (Join-Path $destAdmin 'frames') -Recurse -Force
+  Write-Host "    Frames + offline cache installed (paths are %ProgramData% absolute, machine-independent)."
 }
 
 Write-Host ""
