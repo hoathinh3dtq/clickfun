@@ -96,7 +96,7 @@ public sealed class CanonEdsHelperService : ICameraService, IAsyncDisposable
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "ClickFun", "photos", DateTime.Now.ToString("yyyy-MM-dd"));
         Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, $"CLICKFUN_{DateTime.Now:yyyyMMdd_HHmmss}.jpg");
+        var path = Path.Combine(dir, $"CLICKFUN_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{Guid.NewGuid().ToString("N")[..6]}.jpg");
 
         try
         {

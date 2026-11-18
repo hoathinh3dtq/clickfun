@@ -61,6 +61,27 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
+// Auto-connect the camera at startup: a photobooth should light up, not wait for an
+// operator to press "connect". Best-effort with retries (USB enumeration races are common).
+_ = Task.Run(async () =>
+{
+    for (var attempt = 1; attempt <= 4; attempt++)
+    {
+        try
+        {
+            var status = await camera.ConnectAsync();
+            if (status.Connected) return;
+            BridgeLog.Warn($"auto-connect attempt {attempt}: camera not connected");
+        }
+        catch (Exception ex)
+        {
+            BridgeLog.Warn($"auto-connect attempt {attempt} failed: {ex.Message}");
+        }
+        await Task.Delay(TimeSpan.FromSeconds(2 * attempt));
+    }
+    BridgeLog.Warn("auto-connect gave up after 4 attempts; operator must connect manually from admin");
+});
+
 var liveViewEnv = Environment.GetEnvironmentVariable("CLICKFUN_LIVEVIEW");
 var liveViewPref = liveViewEnv ?? (cameraBackend == "webcam" && bootSettings.LiveView == "auto" ? "camera" : bootSettings.LiveView);
 var liveView = new LiveViewManager(camera, liveViewPref);
@@ -138,6 +159,14 @@ app.MapPost("/camera/disconnect", async () =>
 app.MapPost("/capture", async () =>
 {
     var result = await camera.CaptureAsync();
+    // The operator may have restarted the bridge before the camera enumerated;
+    // one transparent reconnect attempt turns a dead session into a working one.
+    if (!result.Success)
+    {
+        BridgeLog.Warn($"capture failed ({result.Error}); attempting reconnect and retry");
+        try { await camera.ConnectAsync(); } catch (Exception ex) { BridgeLog.Warn($"reconnect failed: {ex.Message}"); }
+        result = await camera.CaptureAsync();
+    }
     return result.Success ? Results.Ok(result) : Results.Problem(result.Error, statusCode: 502);
 });
 
