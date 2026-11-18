@@ -179,3 +179,19 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .filter-card.active { border-color: var(--cf-accent); }
 .filter-card img { width: 100%; aspect-ratio: 1/1; object-fit: cover; display: block; background: #0b1020; }
 .filter-name { padding: 10px 12px; font-weight: 600; font-size: 12px; text-align: center; }
+
+/* ---------- Camera management ---------- */
+.vendor-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.vendor-card { background: #fff; border: 2px solid var(--cf-line); border-radius: 14px; padding: 16px 12px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; font-family: inherit; transition: border-color .15s, transform .15s; }
+.vendor-card:hover { transform: translateY(-2px); }
+.vendor-card.active { border-color: var(--cf-accent); box-shadow: 0 0 0 3px rgba(248, 111, 165, 0.2); }
+.vendor-card.disabled { opacity: 0.45; cursor: not-allowed; }
+.vendor-icon { font-size: 26px; }
+.vendor-title { font-weight: 700; font-size: 13px; }
+.vendor-sub { font-size: 10px; color: var(--cf-muted); text-align: center; line-height: 1.4; }
+.device-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.device-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--cf-line); background: #fff; cursor: pointer; font-family: inherit; text-align: left; }
+.device-row.active { border-color: var(--cf-accent); box-shadow: 0 0 0 3px rgba(248, 111, 165, 0.2); }
+.device-index { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--cf-muted); width: 32px; }
+.device-name { flex: 1; font-weight: 600; font-size: 13px; }
+.device-res { color: var(--cf-muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }

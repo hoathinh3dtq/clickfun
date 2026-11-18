@@ -8,15 +8,18 @@ using Microsoft.AspNetCore.Http;
 var builder = WebApplication.CreateBuilder(args);
 
 var settings = new SettingsStore();
+var bootSettings = settings.Load();
 BridgeLog.Init(settings.LogsDir);
-BridgeLog.Info("ClickFun.CameraBridge starting…");
+BridgeLog.Info("ClickFun.CameraBridge starting.");
 
-var cameraBackend = (Environment.GetEnvironmentVariable("CLICKFUN_CAMERA") ?? "fake").Trim().ToLowerInvariant();
-ICameraService camera = cameraBackend switch
+var cameraBackend = (Environment.GetEnvironmentVariable("CLICKFUN_CAMERA") ?? bootSettings.CameraBackend).Trim().ToLowerInvariant();
+var webcamDevice = int.TryParse(Environment.GetEnvironmentVariable("CLICKFUN_WEBCAM_DEVICE"), out var wd) ? wd : bootSettings.WebcamDevice;
+ICameraService camera = new CameraManager(cameraBackend switch
 {
     "canon" or "canon-edsdk" or "helper" => new CanonEdsHelperService(),
+    "webcam" => new WebcamCameraService(webcamDevice),
     _ => new FakeCameraService(),
-};
+});
 BridgeLog.Info($"Camera backend: {camera.Backend}");
 
 var token = Environment.GetEnvironmentVariable("CLICKFUN_BRIDGE_TOKEN");
@@ -58,8 +61,10 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
-var liveView = LiveViewSelector.Select(camera);
-BridgeLog.Info($"Live view source: {liveView.Kind} (CLICKFUN_LIVEVIEW={(Environment.GetEnvironmentVariable("CLICKFUN_LIVEVIEW") ?? "auto")})");
+var liveViewEnv = Environment.GetEnvironmentVariable("CLICKFUN_LIVEVIEW");
+var liveViewPref = liveViewEnv ?? (cameraBackend == "webcam" && bootSettings.LiveView == "auto" ? "camera" : bootSettings.LiveView);
+var liveView = new LiveViewManager(camera, liveViewPref);
+BridgeLog.Info($"Live view source: {liveView.Kind} ({liveViewPref})");
 
 // ---------- MJPEG live view (same contract as the original booth bridge) ----------
 
@@ -573,6 +578,149 @@ app.MapGet("/admin/filter-preview/{date}/{file}", (string date, string file, Htt
     var bytes = File.ReadAllBytes(resolved);
     bytes = FilterEngine.Apply(bytes, filter);
     return Results.Bytes(bytes, "image/jpeg");
+});
+
+// ---------- Devices (webcams / capture cards) & camera switching ----------
+
+static List<(int Index, string Name, int? Width, int? Height)> ProbeVideoDevices()
+{
+    // Read friendly device names from the registry (works offline, no WinRM/WMI needed).
+    var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    try
+    {
+        var keywords = new[] { "webcam", "camera", "video capture", "capture", "logitech", "usb video" };
+        using var enumRoot = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum");
+        if (enumRoot is not null)
+        {
+            foreach (var className in enumRoot.GetSubKeyNames())
+            {
+                using var classKey = enumRoot.OpenSubKey(className);
+                if (classKey is null) continue;
+                foreach (var devName in classKey.GetSubKeyNames())
+                {
+                    using var devKey = classKey.OpenSubKey(devName);
+                    if (devKey is null) continue;
+                    foreach (var instanceName in devKey.GetSubKeyNames())
+                    {
+                        using var instanceKey = devKey.OpenSubKey(instanceName);
+                        if (instanceKey is null) continue;
+                        var friendly = instanceKey.GetValue("FriendlyName")?.ToString();
+                        var desc = instanceKey.GetValue("DeviceDesc")?.ToString();
+                        foreach (var raw in new[] { friendly, desc })
+                        {
+                            if (string.IsNullOrWhiteSpace(raw)) continue;
+                            // Some DeviceDesc values carry "…;RealName" — keep the real name after ';'.
+                            var cleaned = raw.Contains(';') ? raw[(raw.LastIndexOf(';') + 1)..].Trim() : raw.Trim();
+                            var lower = cleaned.ToLowerInvariant();
+                            if (keywords.Any(k => lower.Contains(k)) && !lower.Contains("microphone") && !lower.Contains("audio"))
+                                names.Add(cleaned);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        BridgeLog.Warn($"Registry device query failed (names will be generic): {ex.Message}");
+    }
+
+    var results = new List<(int, string, int?, int?)>();
+    var nameQueue = new Queue<string>(names);
+
+    for (var index = 0; index <= 7; index++)
+    {
+        try
+        {
+            using var cap = new OpenCvSharp.VideoCapture(index, OpenCvSharp.VideoCaptureAPIs.DSHOW);
+            if (!cap.IsOpened()) continue;
+            var w = (int)cap.Get(OpenCvSharp.VideoCaptureProperties.FrameWidth);
+            var h = (int)cap.Get(OpenCvSharp.VideoCaptureProperties.FrameHeight);
+            var friendly = nameQueue.Count > 0 ? nameQueue.Dequeue() : $"Video device #{index}";
+            results.Add((index, friendly, w > 0 ? w : null, h > 0 ? h : null));
+        }
+        catch { /* device index unavailable */ }
+    }
+
+    return results;
+}
+
+app.MapGet("/admin/devices", () =>
+{
+    var devices = ProbeVideoDevices();
+    var arr = new JsonArray();
+    foreach (var (index, name, width, height) in devices)
+    {
+        arr.Add(new JsonObject
+        {
+            ["index"] = index,
+            ["name"] = name,
+            ["width"] = width,
+            ["height"] = height,
+        });
+    }
+    return Results.Ok(arr);
+});
+
+app.MapPost("/admin/camera", async (HttpRequest req) =>
+{
+    var body = await req.ReadFromJsonAsync<JsonObject>();
+    var backend = body?["backend"]?.GetValue<string>()?.Trim().ToLowerInvariant();
+    var device = body?["device"]?.GetValue<int>() ?? 0;
+
+    if (backend is not ("fake" or "webcam" or "canon" or "canon-edsdk" or "helper"))
+        return Results.BadRequest(new { error = "backend must be fake | webcam | canon" });
+
+    var mgr = camera as CameraManager;
+    if (mgr is null) return Results.Problem("camera manager not available", statusCode: 500);
+
+    try
+    {
+        await mgr.SwitchAsync(backend, device);
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception ex)
+    {
+        BridgeLog.Error("camera switch failed", ex);
+        return Results.Problem(ex.Message, statusCode: 502);
+    }
+
+    // When the webcam itself is the camera, live view must pass through the same
+    // VideoCapture (a UVC device allows only one handle at a time) — release HDMI first.
+    if (backend is "webcam")
+    {
+        liveView.Switch("camera");
+        var s = settings.Load();
+        settings.Save(s with { LiveView = "camera" });
+    }
+
+    // Persist camera selection before connecting so a crash mid-boot still resurfaces it.
+    {
+        var s = settings.Load();
+        settings.Save(s with { CameraBackend = backend is "canon-edsdk" or "helper" ? "canon" : backend, WebcamDevice = device });
+    }
+
+    await mgr.ConnectAsync();
+    return Results.Ok(await mgr.GetStatusAsync());
+});
+
+app.MapPost("/admin/liveview", async (HttpRequest req) =>
+{
+    var body = await req.ReadFromJsonAsync<JsonObject>();
+    var mode = body?["mode"]?.GetValue<string>()?.Trim().ToLowerInvariant();
+
+    if (mode is not ("auto" or "hdmi" or "edsdk" or "webcam" or "camera"))
+        return Results.BadRequest(new { error = "mode must be auto | hdmi | edsdk | webcam | camera" });
+
+    liveView.Switch(mode);
+
+    var s = settings.Load();
+    settings.Save(s with { LiveView = mode });
+
+    return Results.Ok(new { mode = liveView.Kind });
 });
 
 // Print history ----------

@@ -112,16 +112,68 @@ public sealed class HdmiLiveViewSource : ILiveViewSource
 
 public static class LiveViewSelector
 {
-    /// <summary>Creates the preferred live view source: HDMI → EDSDK per env CLICKFUN_LIVEVIEW (auto|hdmi|edsdk).</summary>
-    public static ILiveViewSource Select(ICameraService camera)
+    /// <summary>Creates the preferred live view source: HDMI → EDSDK per env CLICKFUN_LIVEVIEW (auto|hdmi|edsdk|webcam).</summary>
+    public static ILiveViewSource Select(ICameraService camera) => Create(camera, null);
+
+    public static ILiveViewSource Create(ICameraService camera, string? preference)
     {
-        var pref = (Environment.GetEnvironmentVariable("CLICKFUN_LIVEVIEW") ?? "auto").Trim().ToLowerInvariant();
-        if (pref == "edsdk") return new EdsdkLiveViewSource(camera);
+        var pref = (preference ?? Environment.GetEnvironmentVariable("CLICKFUN_LIVEVIEW") ?? "auto").Trim().ToLowerInvariant();
+        if (pref == "edsdk" || pref == "camera") return new EdsdkLiveViewSource(camera);
 
         var hdmi = new HdmiLiveViewSource();
         if (hdmi.Start()) return hdmi;
-        if (pref == "hdmi") return hdmi; // stay empty; caller reports no frames
+        if (pref == "hdmi" || pref == "webcam") return hdmi; // stay empty; caller reports no frames
         BridgeLog.Warn("Falling back to Canon EDSDK EVF live view (no HDMI device).");
         return new EdsdkLiveViewSource(camera);
+    }
+}
+
+/// <summary>
+/// Runtime-switchable live view facade so the admin can change the preview source
+/// without restarting the bridge.
+/// </summary>
+public sealed class LiveViewManager : ILiveViewSource
+{
+    private readonly object _gate = new();
+    private readonly ICameraService _camera;
+    private string _preference;
+    private ILiveViewSource _source;
+
+    public LiveViewManager(ICameraService camera) : this(camera, null) { }
+
+    public LiveViewManager(ICameraService camera, string? preference)
+    {
+        _camera = camera;
+        _preference = preference ?? Environment.GetEnvironmentVariable("CLICKFUN_LIVEVIEW") ?? "auto";
+        _source = LiveViewSelector.Create(camera, _preference);
+    }
+
+    public string Kind => Current.Kind;
+
+    private ILiveViewSource Current
+    {
+        get { lock (_gate) return _source; }
+    }
+
+    public (byte[] Jpeg, DateTime CapturedAtUtc)? GetLatestFrame() => Current.GetLatestFrame();
+    public bool Start() => true;
+
+    public void Switch(string preference)
+    {
+        lock (_gate)
+        {
+            try { _source.Dispose(); } catch { /* ignore */ }
+            _preference = preference;
+            _source = LiveViewSelector.Create(_camera, preference);
+            BridgeLog.Info($"Live view switched to '{preference}'.");
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            try { _source.Dispose(); } catch { /* ignore */ }
+        }
     }
 }

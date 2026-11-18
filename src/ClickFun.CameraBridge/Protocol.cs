@@ -20,6 +20,9 @@ public sealed record SettingsDto(
     string OverlayTemplate,
     string PhotosRoot,
     int VideoMaxSeconds,
-    string PaperLayout = "auto");
+    string PaperLayout = "auto",
+    string CameraBackend = "fake",
+    int WebcamDevice = 0,
+    string LiveView = "auto");
 
 public sealed record HealthDto(string Status, string Version, string CameraBackend, bool PrinterAvailable);

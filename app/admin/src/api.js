@@ -49,6 +49,9 @@ export const api = {
   cameraConnect: () => request('POST', '/camera/connect', {}),
   cameraDisconnect: () => request('POST', '/camera/disconnect', {}),
   cameraCapture: () => request('POST', '/capture', {}),
+  switchCamera: (body) => request('POST', '/admin/camera', body),
+  switchLiveView: (mode) => request('POST', '/admin/liveview', { mode }),
+  devices: () => request('GET', '/admin/devices'),
   printLayouts: () => request('GET', '/print/layouts'),
 
   adminConfig: () => request('GET', '/admin/config'),
