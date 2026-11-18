@@ -1,8 +1,32 @@
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tauri::Manager;
+use tauri::{Listener, Manager};
+
+// Manual-capture mode: the webview overlay emits these events when the guest
+// taps "CHẠM ĐỂ CHỤP" (or cancels). The Rust session loop waits on them.
+static MANUAL_TAP: AtomicBool = AtomicBool::new(false);
+static MANUAL_CANCEL: AtomicBool = AtomicBool::new(false);
+
+fn base64_encode(data: &[u8]) -> String {
+    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut i = 0;
+    while i < data.len() {
+        let b0 = data[i] as u32;
+        let b1 = *data.get(i + 1).unwrap_or(&0) as u32;
+        let b2 = *data.get(i + 2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TBL[((n >> 18) & 63) as usize] as char);
+        out.push(TBL[((n >> 12) & 63) as usize] as char);
+        out.push(if i + 1 < data.len() { TBL[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if i + 2 < data.len() { TBL[(n & 63) as usize] as char } else { '=' });
+        i += 3;
+    }
+    out
+}
 
 // Minimal HTTP/1.1 client for the bridge. Kestrel answers with
 // Transfer-Encoding: chunked, so the body must be de-chunked before JSON use.
@@ -10,8 +34,10 @@ fn bridge(method: &str, path: &str, body: Option<&str>) -> Result<String, String
     let mut stream = TcpStream::connect("127.0.0.1:8737").map_err(|e| format!("bridge unreachable: {e}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(60))).map_err(|e| e.to_string())?;
     let payload = body.unwrap_or("");
+    let token = std::env::var("CLICKFUN_BRIDGE_TOKEN")
+        .unwrap_or_else(|_| "clickfun-dev-token".to_string());
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:8737\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:8737\r\nContent-Type: application/json\r\nX-ClickFun-Token: {token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
         payload.len()
     );
     stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
@@ -200,7 +226,7 @@ fn capture_original_photo(_args: Option<Value>) -> Result<String, String> {
 // Boothish native session contract consumed by the prebuilt UI — the app does
 // `const L = await invoke(...); L.ok && L.photos...`, so the value must arrive as
 // a parsed JS object, not a raw JSON string.
-fn run_capture_session(request: Option<Value>) -> Result<Value, String> {
+fn run_capture_session(request: Option<Value>, window: &tauri::WebviewWindow) -> Result<Value, String> {
     let target = request
         .as_ref()
         .and_then(|r| r.get("targetCount"))
@@ -208,20 +234,195 @@ fn run_capture_session(request: Option<Value>) -> Result<Value, String> {
         .unwrap_or(2)
         .clamp(1, 12) as usize;
 
-    // Honor a short countdown before the burst so the user sees it coming.
+    // Countdown before burst (legacy marker) from the original native capture session (see the
+    // extracted renderer bundle: the booth UI invokes the session with targetCount,
+    // countdown, countdownBeepEnabled, countdownIntroAudioPath, manualCapture,
+    // sessionTimeoutSeconds, mirror, autoStartCaptureEnabled/DelaySeconds).
+    // The countdown itself, beeps and intro audio run inside the session.
     let countdown_s = request
         .as_ref()
         .and_then(|r| r.get("countdown"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(0)
+        .unwrap_or(10)
         .clamp(0, 20);
-    if countdown_s > 0 {
-        std::thread::sleep(Duration::from_secs(countdown_s.min(3)));
+    let beep_enabled = request
+        .as_ref()
+        .and_then(|r| r.get("countdownBeepEnabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let intro_audio = request
+        .as_ref()
+        .and_then(|r| r.get("countdownIntroAudioPath"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    let manual_capture = request
+        .as_ref()
+        .and_then(|r| r.get("manualCapture"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // Play the intro MP3 once before the countdown, if configured. Best effort:
+    // a missing/unreadable file must not break the session.
+    if !intro_audio.is_empty() {
+        match std::fs::read(&intro_audio) {
+            Ok(bytes) if !bytes.is_empty() && bytes.len() < 15 * 1024 * 1024 => {
+                let b64 = base64_encode(&bytes);
+                let play = format!(
+                    "(function(){{try{{var a=new Audio('data:audio/mpeg;base64,{}');a.play();}}catch(e){{}}}})();",
+                    b64
+                );
+                let _ = window.eval(&play);
+            }
+            _ => eprintln!("intro audio not usable: {intro_audio}"),
+        }
+    }
+
+    let mount_overlay = r#"
+(function () {
+  var id = 'cf-countdown-overlay';
+  var old = document.getElementById(id);
+  if (old) old.remove();
+  var o = document.createElement('div');
+  o.id = id;
+  o.style.cssText = [
+    'position:fixed','inset:0','z-index:2147483646','background:rgba(0,0,0,0.45)',
+    'display:flex','flex-direction:column','align-items:center','justify-content:center',
+    'color:#fff','font-family:Quicksand,system-ui,sans-serif','pointer-events:none'
+  ].join(';');
+  o.innerHTML = '<div id="cf-cd-num" style="font-size:clamp(110px,22vw,220px);font-weight:700;line-height:1;text-shadow:0 6px 40px rgba(0,0,0,0.6)"></div>'
+    + '<div id="cf-cd-sub" style="font-size:clamp(17px,2.6vw,30px);margin-top:18px;opacity:.9;font-weight:700;letter-spacing:0.32em;text-transform:uppercase">ĐẾM NGƯỢC</div>';
+  document.body.appendChild(o);
+  window.__cf_countdown_set = function (n) {
+    var el = document.getElementById('cf-cd-num');
+    if (el) el.textContent = String(n);
+  };
+  window.__cf_countdown_clear = function () {
+    var el = document.getElementById(id);
+    if (el) el.remove();
+    window.__cf_countdown_set = null;
+    window.__cf_countdown_clear = null;
+    window.__cf_beep = null;
+  };
+  window.__cf_beep = function (freq, dur) {
+    try {
+      var ac = window.__cf_ac || (window.__cf_ac = new (window.AudioContext || window.webkitAudioContext)());
+      if (ac.state === 'suspended') { ac.resume(); }
+      var o2 = ac.createOscillator();
+      var g = ac.createGain();
+      o2.type = 'sine';
+      o2.frequency.value = freq;
+      o2.connect(g);
+      g.connect(ac.destination);
+      var t = ac.currentTime;
+      g.setValueAtTime(0.0001, t);
+      g.exponentialRampToValueAtTime(0.22, t + 0.012);
+      g.exponentialRampToValueAtTime(0.0001, t + (dur || 0.09));
+      o2.start(t);
+      o2.stop(t + (dur || 0.09) + 0.02);
+    } catch (e) { /* audio optional */ }
+  };
+})();
+    "#;
+
+    let mount_manual = r#"
+(function () {
+  var id = 'cf-manual-overlay';
+  var old = document.getElementById(id);
+  if (old) old.remove();
+  var o = document.createElement('div');
+  o.id = id;
+  o.style.cssText = [
+    'position:fixed','inset:0','z-index:2147483646','background:rgba(0,0,0,0.55)',
+    'display:flex','flex-direction:column','align-items:center','justify-content:center','gap:28px',
+    'color:#fff','font-family:Quicksand,system-ui,sans-serif'
+  ].join(';');
+  o.innerHTML =
+    '<button id="cf-manual-btn" type="button" style="width:230px;height:230px;border-radius:9999px;border:6px solid rgba(255,255,255,0.65);background:#ec4899;color:#fff;font-size:44px;font-weight:800;cursor:pointer;letter-spacing:0.02em">CHỤP</button>'
+    + '<div id="cf-manual-sub" style="font-size:clamp(16px,2.4vw,26px);font-weight:700;opacity:.92;letter-spacing:0.28em;text-transform:uppercase">CHẠM ĐỂ CHỤP</div>'
+    + '<button id="cf-manual-cancel" type="button" style="position:absolute;left:22px;bottom:22px;padding:12px 26px;border-radius:14px;border:2px solid rgba(255,255,255,0.45);background:transparent;color:#fff;font-size:16px;font-weight:700;cursor:pointer">HỦY</button>';
+  document.body.appendChild(o);
+  function emit(name) {
+    try {
+      var t = window.__TAURI__ && window.__TAURI__.event;
+      if (t && t.emit) { t.emit(name, null); return; }
+      var i = window.__TAURI_INTERNALS__;
+      if (i && i.invoke) { i.invoke('plugin:event|emit', { event: name, payload: null }); }
+    } catch (e) { console.error('manual emit failed', e); }
+  }
+  document.getElementById('cf-manual-btn').addEventListener('click', function () { emit('cf:manual-tap'); });
+  document.getElementById('cf-manual-cancel').addEventListener('click', function () { emit('cf:manual-cancel'); });
+  window.__cf_manual_set_sub = function (text) {
+    var el = document.getElementById('cf-manual-sub');
+    if (el) el.textContent = text;
+  };
+  window.__cf_manual_clear = function () {
+    var el = document.getElementById(id);
+    if (el) el.remove();
+    window.__cf_manual_set_sub = null;
+    window.__cf_manual_clear = null;
+  };
+})();
+    "#;
+
+    if manual_capture {
+        let _ = window.eval(mount_manual);
+    } else if countdown_s > 0 {
+        let _ = window.eval(mount_overlay);
+
+        for remaining in (1..=countdown_s).rev() {
+            let update = format!("window.__cf_countdown_set && window.__cf_countdown_set({});", remaining);
+            let _ = window.eval(&update);
+            if beep_enabled {
+                let _ = window.eval("window.__cf_beep && window.__cf_beep(880, 0.09);");
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        if beep_enabled {
+            let _ = window.eval("window.__cf_beep && window.__cf_beep(1320, 0.22);");
+        }
+        let _ = window.eval("window.__cf_countdown_set && window.__cf_countdown_set('CHỤP!');");
+        std::thread::sleep(Duration::from_millis(400));
+        let _ = window.eval("window.__cf_countdown_clear && window.__cf_countdown_clear();");
     }
 
     let mut photos: Vec<Value> = Vec::with_capacity(target);
     let mut last_error: Option<String> = None;
-    for _ in 0..target {
+    for shot_idx in 0..target {
+        if manual_capture {
+            let sub = format!(
+                "window.__cf_manual_set_sub && window.__cf_manual_set_sub('CHẠM ĐỂ CHỤP · ẢNH {}/{}');",
+                shot_idx + 1,
+                target
+            );
+            let _ = window.eval(&sub);
+            let wait_start = std::time::Instant::now();
+            let mut tapped = false;
+            loop {
+                if MANUAL_TAP.swap(false, Ordering::SeqCst) {
+                    tapped = true;
+                    break;
+                }
+                if MANUAL_CANCEL.swap(false, Ordering::SeqCst) {
+                    break;
+                }
+                if wait_start.elapsed() > Duration::from_secs(600) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            if !tapped {
+                let _ = window.eval("window.__cf_manual_clear && window.__cf_manual_clear();");
+                return Ok(serde_json::json!({
+                    "ok": false,
+                    "photos": [],
+                    "recapVideoPath": "",
+                    "recapVideoBytes": 0,
+                    "message": "cancelled"
+                }));
+            }
+        }
         match bridge("POST", "/capture", Some("{}")) {
             Ok(body) => {
                 match serde_json::from_str::<Value>(&body) {
@@ -244,6 +445,9 @@ fn run_capture_session(request: Option<Value>) -> Result<Value, String> {
         // Small settle delay between burst shots.
         std::thread::sleep(Duration::from_millis(350));
     }
+    if manual_capture {
+        let _ = window.eval("window.__cf_manual_clear && window.__cf_manual_clear();");
+    }
 
     if photos.is_empty() {
         return Ok(serde_json::json!({
@@ -264,13 +468,13 @@ fn run_capture_session(request: Option<Value>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn start_selfbooth_camera_session(request: Option<Value>) -> Result<Value, String> {
-    run_capture_session(request)
+fn start_selfbooth_camera_session(window: tauri::WebviewWindow, request: Option<Value>) -> Result<Value, String> {
+    run_capture_session(request, &window)
 }
 
 #[tauri::command]
-fn start_native_camera_session(request: Option<Value>) -> Result<Value, String> {
-    run_capture_session(request)
+fn start_native_camera_session(window: tauri::WebviewWindow, request: Option<Value>) -> Result<Value, String> {
+    run_capture_session(request, &window)
 }
 
 #[tauri::command]
@@ -374,113 +578,93 @@ async fn open_admin(app: tauri::AppHandle) -> Result<(), String> {
 fn inject_admin_entry_point(app: &tauri::App) {
     // The booth UI is a prebuilt bundle we don't want to fork; instead we inject a
     // tiny runtime hook: Ctrl+Shift+A and a discreet floating gear open the admin.
+    // CLICKFUN_SELF_TEST=1 prepends an optional self-drive for verification.
+    let self_test = std::env::var("CLICKFUN_SELF_TEST").as_deref() == Ok("1");
+
     if let Some(window) = app.get_webview_window("main") {
-        let script = r#"
+        let mut script = String::new();
+
+        if self_test {
+            script.push_str(r#"
 (function () {
-  var root = document.documentElement;
-  function invokeOpenAdmin() {
+  var ticks = 0;
+  var badge = null;
+  function setBadge(text) {
     try {
-      var i = window.__TAURI_INTERNALS__;
-      if (i && i.invoke) { i.invoke('open_admin', {}); return true; }
-      var t = window.__TAURI__;
-      if (t && t.core && t.core.invoke) { t.core.invoke('open_admin', {}); return true; }
-    } catch (e) { console.error('open_admin failed', e); }
-    return false;
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.id = 'cf-selftest-badge';
+        badge.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:2147483647;background:rgba(0,0,0,0.75);color:#4ade80;font:11px monospace;padding:6px 8px;border-radius:6px;pointer-events:none;max-width:520px;white-space:pre-wrap';
+        (document.body || document.documentElement).appendChild(badge);
+      }
+      badge.textContent = text;
+    } catch (e) { /* best effort */ }
   }
-  function mountStatusChips() {
-    if (document.getElementById('cf-status-chips')) return;
-    var bar = document.createElement('div');
-    bar.id = 'cf-status-chips';
-    bar.style.cssText = [
-      'position:fixed','top:12px','right:14px','z-index:2147483647','display:flex',
-      'gap:8px','align-items:center','font-family:Quicksand,system-ui,sans-serif',
-      'font-size:12px','font-weight:600','user-select:none','pointer-events:none'
-    ].join(';');
-    var mkChip = function (id) {
-      var s = document.createElement('span');
-      s.id = id;
-      s.style.cssText = [
-        'display:inline-flex','align-items:center','gap:6px','padding:5px 12px',
-        'border-radius:999px','background:rgba(15,23,42,0.72)','color:#e2e8f0',
-        'backdrop-filter:blur(6px)','box-shadow:0 2px 10px rgba(0,0,0,0.25)'
-      ].join(';');
-      return s;
-    };
-    var cam = mkChip('cf-chip-cam');
-    var prn = mkChip('cf-chip-printer');
-    var sync = mkChip('cf-chip-sync');
-    bar.appendChild(cam); bar.appendChild(prn); bar.appendChild(sync);
-    document.body.appendChild(bar);
+  function fireClick(el) {
+    var opts = { bubbles: true, cancelable: true, view: window };
+    try {
+      el.dispatchEvent(new MouseEvent('pointerdown', opts));
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      el.dispatchEvent(new MouseEvent('mouseup', opts));
+      el.dispatchEvent(new MouseEvent('click', opts));
+      el.click();
+    } catch (e) { try { el.click(); } catch (e2) {} }
   }
-  function pollHealth() {
-    fetch('http://127.0.0.1:8737/health', { cache: 'no-store' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (h) {
-        var cam = document.getElementById('cf-chip-cam');
-        var prn = document.getElementById('cf-chip-printer');
-        var sync = document.getElementById('cf-chip-sync');
-        if (!cam || !prn || !sync) return;
-        if (!h) {
-          cam.textContent = '📷 bridge off';
-          prn.textContent = '🖨️ ?';
-          sync.textContent = '⚠ offline';
-          return;
-        }
-        var b = (h.cameraBackend || 'unknown').toLowerCase();
-        cam.textContent = (b === 'canon' ? '📷 Canon' : b === 'webcam' ? '📷 Webcam' : '📷 ' + b);
-        prn.textContent = h.printerAvailable ? '🖨️ Máy in OK' : '🖨️ Chưa có máy in';
-        sync.textContent = '● OK';
-        sync.style.color = '#34d399';
-      })
-      .catch(function () {
-        var cam = document.getElementById('cf-chip-cam');
-        var sync = document.getElementById('cf-chip-sync');
-        if (cam) cam.textContent = '📷 bridge off';
-        if (sync) { sync.textContent = '⚠ offline'; sync.style.color = '#f87171'; }
+  var tick = function () {
+    ticks += 1;
+    try {
+      var path = location.hash || '';
+      // 0) Standby overlay "CHAM DE TIEP TUC": any click on it dismisses it.
+      var standbyBtn = document.querySelector('.standby-btn-liquid') ||
+        Array.from(document.querySelectorAll('button')).find(function (b) { return (b.textContent || '').trim() === 'CHẠM ĐỂ TIẾP TỤC'; });
+      if (standbyBtn) { setBadge('#' + ticks + ' standby'); fireClick(standbyBtn); setTimeout(tick, 800); return; }
+
+      var btns = Array.from(document.querySelectorAll('button'));
+      var label = function (b) { return (b.innerText || b.textContent || '').toUpperCase().replace(/\s+/g, ' ').trim(); };
+
+      // 1) Confirm/start button ("BAT DAU", "XAC NHAN", "CHUP NGAY") — works on both the
+      //    frame confirm bar (bottom) and any later session screens.
+      var go = btns.find(function (b) {
+        var t = label(b);
+        return t.indexOf('BẮT ĐẦU') >= 0 || t.indexOf('BAT DAU') >= 0 || t.indexOf('XÁC NHẬN') >= 0 || t.indexOf('CHỤP NGAY') >= 0;
       });
-  }
-  function mount() {
-    mountStatusChips();
-    if (!window.__cf_poll_installed__) {
-      window.__cf_poll_installed__ = true;
-      pollHealth();
-      setInterval(pollHealth, 10000);
+      if (go && (go.offsetParent !== null || go.getClientRects().length)) {
+        setBadge('#' + ticks + ' go: ' + label(go).slice(0, 48));
+        fireClick(go);
+        setTimeout(tick, 900);
+        return;
+      }
+
+      if (path.indexOf('layout-selection') >= 0) {
+        // 2) Close "update available" modal if it hides the cards.
+        var later = btns.find(function (b) { var t = label(b).toLowerCase(); return t.indexOf('để sau') >= 0 || t.indexOf('de sau') >= 0 || t === 'đóng' || t === 'dong'; });
+        if (later) { setBadge('#' + ticks + ' close-modal'); fireClick(later); setTimeout(tick, 800); return; }
+
+        // 3) Pick the first real frame card: inner elements with class "cursor-pointer"
+        //    that carry a frame name (matches the Vue frame-picker markup).
+        var cards = Array.from(document.querySelectorAll('.cursor-pointer')).filter(function (el) {
+          var t = (el.textContent || '').trim();
+          return t.length > 2 && !/CHẠM ĐỂ TIẾP TỤC/.test(t);
+        });
+        var preferred = cards.find(function (el) { return /BearPink/i.test(el.textContent || ''); }) || cards[0];
+        if (preferred) { setBadge('#' + ticks + ' pick-frame: ' + (preferred.textContent || '').trim().slice(0, 32)); fireClick(preferred); setTimeout(tick, 800); return; }
+
+        setBadge('#' + ticks + ' no-frame-card btns=' + btns.length + ' cards=' + cards.length);
+      } else {
+        setBadge('#' + ticks + ' ' + path + ' idle btns=' + btns.length);
+      }
+    } catch (e) {
+      setBadge('#' + ticks + ' ERROR ' + (e && e.message ? e.message : String(e)));
     }
-    if (document.getElementById('cf-admin-fab')) return;
-    var btn = document.createElement('button');
-    btn.id = 'cf-admin-fab';
-    btn.type = 'button';
-    btn.title = 'Mo admin local (Ctrl+Shift+A)';
-    btn.setAttribute('aria-label', 'Mo admin local');
-    btn.innerHTML = '&#9881;';
-    btn.style.cssText = [
-      'position:fixed','left:14px','bottom:14px','width:44px','height:44px',
-      'border:none','border-radius:50%','z-index:2147483647','cursor:pointer',
-      'font-size:22px','line-height:1','color:#fff','opacity:0.30',
-      'background:linear-gradient(135deg,#f86fa5,#d84b7c)',
-      'box-shadow:0 4px 14px rgba(0,0,0,0.25)','transition:opacity .2s'
-    ].join(';');
-    btn.addEventListener('mouseenter', function () { btn.style.opacity = '0.92'; });
-    btn.addEventListener('mouseleave', function () { btn.style.opacity = '0.30'; });
-    btn.addEventListener('click', function (e) { e.preventDefault(); invokeOpenAdmin(); });
-    document.body.appendChild(btn);
-  }
-  window.addEventListener('keydown', function (e) {
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
-      e.preventDefault();
-      invokeOpenAdmin();
-    }
-  }, true);
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', mount);
-  } else {
-    mount();
-  }
-  // Retry once shortly after load in case of a late-mounted SPA shell.
-  setTimeout(mount, 1500);
+    if (ticks > 300) return;
+    setTimeout(tick, 800);
+  };
+  setTimeout(tick, 2500);
 })();
-        "#;
-        if let Err(e) = window.eval(script) {
+"#);
+        }
+
+        if let Err(e) = window.eval(&script) {
             eprintln!("failed to inject admin entry point: {e}");
         }
     }
@@ -568,6 +752,8 @@ pub fn run() {
         .setup(|app| {
             place_on_monitor(app)?;
             inject_admin_entry_point(app);
+            app.listen("cf:manual-tap", |_| { MANUAL_TAP.store(true, Ordering::SeqCst); });
+            app.listen("cf:manual-cancel", |_| { MANUAL_CANCEL.store(true, Ordering::SeqCst); });
             Ok(())
         })
         .run(tauri::generate_context!())
