@@ -110,8 +110,12 @@ app.MapGet("/frame/latest", () =>
 
 // ---------- Camera ----------
 
-app.MapGet("/health", () =>
+app.MapGet("/health", (HttpResponse res) =>
 {
+    // Allow the booth webview (tauri.localhost) to poll health for status chips.
+    res.Headers["Access-Control-Allow-Origin"] = "*";
+    res.Headers["Access-Control-Allow-Methods"] = "GET";
+    res.Headers["Access-Control-Allow-Headers"] = "Content-Type";
     var s = settings.Load();
     return Results.Ok(new HealthDto("ok", "0.1.0", camera.Backend,
         PrintService.IsPrinterAvailable(s.PrinterName)));
@@ -180,6 +184,56 @@ app.MapGet("/print/layouts", () =>
 
     static string? PrinterSettingsInstalledFirst() =>
         System.Drawing.Printing.PrinterSettings.InstalledPrinters.Cast<string>().FirstOrDefault();
+});
+
+// Installed printers (local) + DS-RX1 detection + paper sizes.
+app.MapGet("/admin/printers", () =>
+{
+    var arr = new JsonArray();
+    foreach (string name in System.Drawing.Printing.PrinterSettings.InstalledPrinters)
+    {
+        var ps = new System.Drawing.Printing.PrinterSettings { PrinterName = name };
+        var papers = new JsonArray();
+        try
+        {
+            foreach (System.Drawing.Printing.PaperSize p in ps.PaperSizes)
+            {
+                // Match common DNP DS-RX1 media sizes by inches (0.01" units).
+                var wIn = p.Width / 100.0;
+                var hIn = p.Height / 100.0;
+                var tag = (wIn, hIn) switch
+                {
+                    ( >= 3.9 and <= 4.1, >= 5.9 and <= 6.1 ) => "4x6",
+                    ( >= 5.9 and <= 6.1, >= 3.9 and <= 4.1 ) => "4x6-landscape",
+                    ( >= 1.9 and <= 2.1, >= 5.9 and <= 6.1 ) => "2x6",
+                    ( >= 5.9 and <= 6.1, >= 1.9 and <= 2.1 ) => "2x6-landscape",
+                    _ => null,
+                };
+                papers.Add(new JsonObject { ["name"] = p.PaperName, ["widthIn"] = wIn, ["heightIn"] = hIn, ["dnp"] = tag });
+            }
+        }
+        catch { /* driver may refuse paper size query */ }
+
+        var isDnp = new[] { "ds", "dnp", "rx1" }.Any(t => name.ToLowerInvariant().Contains(t));
+        var dims = new List<string>();
+        foreach (var p in papers)
+        {
+            if (p is not JsonObject o) continue;
+            var dnp = o["dnp"] as JsonValue;
+            if (dnp is not null && dnp.TryGetValue<string>(out var tag) && tag is not null) dims.Add(tag);
+        }
+
+        arr.Add(new JsonObject
+        {
+            ["name"] = name,
+            ["isDefault"] = System.Drawing.Printing.PrinterSettings.InstalledPrinters.Cast<string>().FirstOrDefault() == name,
+            ["isDnp"] = isDnp,
+            ["supports4x6"] = dims.Contains("4x6"),
+            ["supports2x6"] = dims.Contains("2x6"),
+            ["paperSizes"] = papers,
+        });
+    }
+    return Results.Ok(arr);
 });
 
 app.MapPost("/print", async (HttpRequest req) =>

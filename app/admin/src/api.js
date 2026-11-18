@@ -52,6 +52,7 @@ export const api = {
   switchCamera: (body) => request('POST', '/admin/camera', body),
   switchLiveView: (mode) => request('POST', '/admin/liveview', { mode }),
   devices: () => request('GET', '/admin/devices'),
+  printers: () => request('GET', '/admin/printers'),
   printLayouts: () => request('GET', '/print/layouts'),
 
   adminConfig: () => request('GET', '/admin/config'),

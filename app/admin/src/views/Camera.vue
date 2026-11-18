@@ -7,12 +7,51 @@ const step = ref(1) // 1 = chọn hãng, 2 = chọn thiết bị
 const backend = ref('webcam')
 const cam = ref(null)
 const devices = ref([])
+const printerList = ref([])
+const printerLayouts = ref(null)
 const selectedDevice = ref(0)
 const busy = ref(false)
+const busyPrinter = ref(false)
 const log = ref('')
+
+async function refreshPrinters() {
+  busyPrinter.value = true
+  try {
+    const [pl, s, layouts] = await Promise.all([
+      api.printers(),
+      api.settings().catch(() => null),
+      api.printLayouts().catch(() => null),
+    ])
+    printerList.value = pl || []
+    printerLayouts.value = layouts
+    selectedPrinter.value = s?.PrinterName || s?.printerName || ''
+  } catch (e) {
+    message.error(String(e.message || e))
+  } finally {
+    busyPrinter.value = false
+  }
+}
+
+const selectedPrinter = ref('')
 
 async function refresh() {
   try { cam.value = await api.cameraStatus() } catch (e) { message.error(String(e.message || e)) }
+}
+
+async function setPrinter(name) {
+  busyPrinter.value = true
+  try {
+    const s = await api.settings()
+    const merged = { ...s, PrinterName: name, printerName: undefined }
+    await api.saveSettings(merged)
+    selectedPrinter.value = name
+    message.success('Đã chọn máy in: ' + name)
+    await refreshPrinters()
+  } catch (e) {
+    message.error(String(e.message || e))
+  } finally {
+    busyPrinter.value = false
+  }
 }
 
 async function refreshDevices() {
@@ -89,6 +128,7 @@ const vendorOptions = [
 onMounted(async () => {
   await refresh()
   await refreshDevices()
+  await refreshPrinters()
 })
 </script>
 
@@ -137,6 +177,30 @@ onMounted(async () => {
         <p style="margin: 8px 0 2px;"><strong>Backend:</strong> {{ backendLabel }}</p>
         <p style="margin: 2px 0;"><strong>Model:</strong> {{ camModel }}</p>
         <p style="margin: 2px 0;"><strong>Kết nối:</strong> {{ isConnected ? 'Có ✅' : 'Chưa' }}</p>
+      </div>
+
+      <a-divider />
+
+      <div>
+        <div class="stat-label" style="display: flex; align-items: center; justify-content: space-between;">
+          Máy in đã phát hiện
+          <a-button size="small" :loading="busyPrinter" @click="refreshPrinters">↻ Quét lại</a-button>
+        </div>
+        <div v-if="printerList.length === 0" class="empty" style="padding: 18px 0;">
+          Không tìm thấy máy in nào trên máy này.
+        </div>
+        <div v-else class="device-list">
+          <button v-for="p in printerList" :key="p.name" class="device-row" :class="{ active: selectedPrinter === p.name }" @click="setPrinter(p.name)">
+            <span class="device-name">{{ p.name }}</span>
+            <span class="device-res">{{ p.isDnp ? 'DS-RX1 ✅' : 'Khác' }}</span>
+            <span class="device-res">{{ [p.supports4x6 ? '4×6' : null, p.supports2x6 ? '2×6' : null].filter(Boolean).join(' / ') || '—' }}</span>
+          </button>
+        </div>
+        <p class="frame-meta" style="margin-top: 8px;">
+          Máy in đang chọn: <strong>{{ selectedPrinter || '(mặc định hệ thống)' }}</strong><br />
+          Khổ nhận khi in “auto” (tự khớp ảnh): <strong>{{ printerLayouts?.layouts?.join?.(', ') || '—' }}</strong><br />
+          DS-RX1 tự nhận 2×6/4×6 theo media thực tế khi in.
+        </p>
       </div>
 
       <a-space wrap>

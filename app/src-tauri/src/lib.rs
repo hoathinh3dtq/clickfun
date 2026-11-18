@@ -150,14 +150,80 @@ fn capture_original_photo(_args: Option<Value>) -> Result<String, String> {
     bridge("POST", "/capture", Some("{}"))
 }
 
-#[tauri::command]
-fn start_selfbooth_camera_session(_request: Option<Value>) -> Result<String, String> {
-    bridge("POST", "/camera/connect", Some("{}"))
+// Boothish native session contract consumed by the prebuilt UI — the app does
+// `const L = await invoke(...); L.ok && L.photos...`, so the value must arrive as
+// a parsed JS object, not a raw JSON string.
+fn run_capture_session(request: Option<Value>) -> Result<Value, String> {
+    let target = request
+        .as_ref()
+        .and_then(|r| r.get("targetCount"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2)
+        .clamp(1, 12) as usize;
+
+    // Honor a short countdown before the burst so the user sees it coming.
+    let countdown_s = request
+        .as_ref()
+        .and_then(|r| r.get("countdown"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .clamp(0, 20);
+    if countdown_s > 0 {
+        std::thread::sleep(Duration::from_secs(countdown_s.min(3)));
+    }
+
+    let mut photos: Vec<Value> = Vec::with_capacity(target);
+    let mut last_error: Option<String> = None;
+    for _ in 0..target {
+        match bridge("POST", "/capture", Some("{}")) {
+            Ok(body) => {
+                match serde_json::from_str::<Value>(&body) {
+                    Ok(v) => {
+                        let path = v
+                            .get("filePath")
+                            .or_else(|| v.get("FilePath"))
+                            .and_then(|p| p.as_str())
+                            .map(str::to_string);
+                        match path {
+                            Some(p) if !p.is_empty() => photos.push(serde_json::json!({ "path": p })),
+                            _ => last_error = Some("capture response missing filePath".to_string()),
+                        }
+                    }
+                    Err(_) => last_error = Some("capture returned unparseable payload".to_string()),
+                }
+            }
+            Err(e) => last_error = Some(e),
+        }
+        // Small settle delay between burst shots.
+        std::thread::sleep(Duration::from_millis(350));
+    }
+
+    if photos.is_empty() {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "photos": [],
+            "recapVideoPath": "",
+            "recapVideoBytes": 0,
+            "message": last_error.unwrap_or_else(|| "camera produced no photos".to_string())
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "photos": photos,
+        "recapVideoPath": "",
+        "recapVideoBytes": 0
+    }))
 }
 
 #[tauri::command]
-fn start_native_camera_session(_request: Option<Value>) -> Result<String, String> {
-    bridge("POST", "/camera/connect", Some("{}"))
+fn start_selfbooth_camera_session(request: Option<Value>) -> Result<Value, String> {
+    run_capture_session(request)
+}
+
+#[tauri::command]
+fn start_native_camera_session(request: Option<Value>) -> Result<Value, String> {
+    run_capture_session(request)
 }
 
 #[tauri::command]
@@ -274,7 +340,65 @@ fn inject_admin_entry_point(app: &tauri::App) {
     } catch (e) { console.error('open_admin failed', e); }
     return false;
   }
+  function mountStatusChips() {
+    if (document.getElementById('cf-status-chips')) return;
+    var bar = document.createElement('div');
+    bar.id = 'cf-status-chips';
+    bar.style.cssText = [
+      'position:fixed','top:12px','right:14px','z-index:2147483647','display:flex',
+      'gap:8px','align-items:center','font-family:Quicksand,system-ui,sans-serif',
+      'font-size:12px','font-weight:600','user-select:none','pointer-events:none'
+    ].join(';');
+    var mkChip = function (id) {
+      var s = document.createElement('span');
+      s.id = id;
+      s.style.cssText = [
+        'display:inline-flex','align-items:center','gap:6px','padding:5px 12px',
+        'border-radius:999px','background:rgba(15,23,42,0.72)','color:#e2e8f0',
+        'backdrop-filter:blur(6px)','box-shadow:0 2px 10px rgba(0,0,0,0.25)'
+      ].join(';');
+      return s;
+    };
+    var cam = mkChip('cf-chip-cam');
+    var prn = mkChip('cf-chip-printer');
+    var sync = mkChip('cf-chip-sync');
+    bar.appendChild(cam); bar.appendChild(prn); bar.appendChild(sync);
+    document.body.appendChild(bar);
+  }
+  function pollHealth() {
+    fetch('http://127.0.0.1:8737/health', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (h) {
+        var cam = document.getElementById('cf-chip-cam');
+        var prn = document.getElementById('cf-chip-printer');
+        var sync = document.getElementById('cf-chip-sync');
+        if (!cam || !prn || !sync) return;
+        if (!h) {
+          cam.textContent = '📷 bridge off';
+          prn.textContent = '🖨️ ?';
+          sync.textContent = '⚠ offline';
+          return;
+        }
+        var b = (h.cameraBackend || 'unknown').toLowerCase();
+        cam.textContent = (b === 'canon' ? '📷 Canon' : b === 'webcam' ? '📷 Webcam' : '📷 ' + b);
+        prn.textContent = h.printerAvailable ? '🖨️ Máy in OK' : '🖨️ Chưa có máy in';
+        sync.textContent = '● OK';
+        sync.style.color = '#34d399';
+      })
+      .catch(function () {
+        var cam = document.getElementById('cf-chip-cam');
+        var sync = document.getElementById('cf-chip-sync');
+        if (cam) cam.textContent = '📷 bridge off';
+        if (sync) { sync.textContent = '⚠ offline'; sync.style.color = '#f87171'; }
+      });
+  }
   function mount() {
+    mountStatusChips();
+    if (!window.__cf_poll_installed__) {
+      window.__cf_poll_installed__ = true;
+      pollHealth();
+      setInterval(pollHealth, 10000);
+    }
     if (document.getElementById('cf-admin-fab')) return;
     var btn = document.createElement('button');
     btn.id = 'cf-admin-fab';

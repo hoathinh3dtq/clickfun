@@ -13,7 +13,8 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "C:/ProgramData/ClickFun/admin/**" }
+        { "path": "C:/ProgramData/ClickFun/admin/**" },
+        { "path": "C:/ProgramData/ClickFun/photos/**" }
       ]
     }
   ]
