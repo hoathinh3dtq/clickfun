@@ -41,9 +41,9 @@ onMounted(refresh)
 
     <div class="card" style="max-width: 720px; display: flex; flex-direction: column; gap: 14px;">
       <div>
-        <div class="stat-label">Máy ảnh (hiện tại: {{ cam?.Backend ?? '—' }})</div>
-        <p style="margin: 8px 0 0;"><strong>Kết nối:</strong> {{ cam?.Connected ? 'Có ✅' : 'Chưa' }}<span v-if="cam?.CameraModel"> · {{ cam.CameraModel }}</span></p>
-        <p v-if="cam?.FreeBytesOnCard" style="margin: 4px 0 0; color: var(--cf-muted);">Thẻ nhớ trống: {{ Math.round(cam.FreeBytesOnCard / 1048576) }} MB</p>
+        <div class="stat-label">Máy ảnh (hiện tại: {{ cam?.backend ?? '—' }})</div>
+        <p style="margin: 8px 0 0;"><strong>Kết nối:</strong> {{ cam?.connected ? 'Có ✅' : 'Chưa' }}<span v-if="cam?.cameraModel"> · {{ cam.CameraModel }}</span></p>
+        <p v-if="cam?.freeBytesOnCard" style="margin: 4px 0 0; color: var(--cf-muted);">Thẻ nhớ trống: {{ Math.round(cam.FreeBytesOnCard / 1048576) }} MB</p>
       </div>
       <a-space>
         <a-button type="primary" :loading="busy" @click="connect">Kết nối</a-button>
@@ -65,3 +65,4 @@ onMounted(refresh)
     </div>
   </div>
 </template>
+
