@@ -4,21 +4,68 @@ use std::net::TcpStream;
 use std::time::Duration;
 use tauri::Manager;
 
+// Minimal HTTP/1.1 client for the bridge. Kestrel answers with
+// Transfer-Encoding: chunked, so the body must be de-chunked before JSON use.
 fn bridge(method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
     let mut stream = TcpStream::connect("127.0.0.1:8737").map_err(|e| format!("bridge unreachable: {e}"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
+    stream.set_read_timeout(Some(Duration::from_secs(60))).map_err(|e| e.to_string())?;
     let payload = body.unwrap_or("");
     let req = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:8737\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
         payload.len()
     );
     stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
-    let mut buf = String::new();
-    stream.read_to_string(&mut buf).map_err(|e| e.to_string())?;
-    match buf.find("\r\n\r\n") {
-        Some(i) => Ok(buf[i + 4..].to_string()),
-        None => Ok(buf),
+
+    let mut buf = Vec::with_capacity(4096);
+    stream.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+
+    let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+        .ok_or_else(|| "bridge response missing header separator".to_string())?;
+    let head = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
+    let raw_body = &buf[header_end..];
+
+    let is_chunked = head
+        .lines()
+        .any(|l| l.starts_with("transfer-encoding:") && l.contains("chunked"));
+
+    let decoded = if is_chunked {
+        decode_http_chunks(raw_body)?
+    } else {
+        let content_len = head
+            .lines()
+            .find(|l| l.starts_with("content-length:"))
+            .and_then(|l| l.split(':').nth(1))
+            .and_then(|v| v.trim().parse::<usize>().ok());
+        match content_len {
+            Some(n) => raw_body[..n.min(raw_body.len())].to_vec(),
+            None => raw_body.to_vec(),
+        }
+    };
+
+    Ok(String::from_utf8_lossy(&decoded).to_string())
+}
+
+fn decode_http_chunks(buf: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(buf.len());
+    let mut i = 0usize;
+    loop {
+        if i >= buf.len() { break; }
+        let rel = buf[i..].windows(2).position(|w| w == b"\r\n").ok_or_else(|| "chunk header missing CRLF".to_string())?;
+        let line_end = i + rel;
+        let size_line = String::from_utf8_lossy(&buf[i..line_end]).trim().to_string();
+        let size_hex = size_line.split(';').next().unwrap_or("").trim().to_string();
+        let size = usize::from_str_radix(size_hex.as_str(), 16)
+            .map_err(|_| format!("bad chunk size '{size_hex}'"))?;
+        if size == 0 { break; }
+        let chunk_start = line_end + 2;
+        let chunk_end = chunk_start + size;
+        if chunk_end > buf.len() {
+            return Err("chunk body overflows response".to_string());
+        }
+        out.extend_from_slice(&buf[chunk_start..chunk_end]);
+        i = chunk_end + 2; // skip trailing CRLF after chunk
     }
+    Ok(out)
 }
 
 fn program_data_dir() -> std::path::PathBuf {
